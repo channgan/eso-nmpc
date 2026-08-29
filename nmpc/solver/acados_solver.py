@@ -28,7 +28,7 @@ def _require_acados() -> tuple[Any, Any]:
 def build_ocp(config: NmpcConfig) -> Any:
     """Construct the acados OCP without generating or compiling code."""
     AcadosOcp, _ = _require_acados()
-    model = QuadrotorModel(config.model.mass, config.model.gravity)
+    model = QuadrotorModel(config.model.mass, config.model.gravity, config.model.rate_tau)
     ocp = AcadosOcp()
     ocp.model = model.export_acados_model(config.code_generation.model_name)
     n = config.controller.horizon_steps
@@ -122,7 +122,7 @@ def build_ocp(config: NmpcConfig) -> Any:
     ocp.constraints.uh = nonlinear_upper
     ocp.constraints.lh_e = nonlinear_lower.copy()
     ocp.constraints.uh_e = nonlinear_upper.copy()
-    ocp.constraints.x0 = np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0]]
+    ocp.constraints.x0 = np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
     ocp.parameter_values = np.r_[np.zeros(NP), [1.0, 0.0, 0.0, 0.0]]
 
     options = ocp.solver_options

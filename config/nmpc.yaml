@@ -2,6 +2,12 @@ model:
   # Gazebo x500_base: 2.0 kg body + four 0.016076923 kg rotors.
   mass: 2.0643076923         # kg
   gravity: 9.80665           # m/s^2, positive down in NED
+  # First-order lag modelling PX4's rate loop, whose command-to-actuation
+  # delay measures ~0.2 s in SITL.  Without it the OCP commands corrections
+  # faster than the vehicle can execute them (sustained +/-0.8 rad/s limit
+  # cycle); with it the solver keeps its plan inside the achievable rate
+  # response while still using full rate authority for tracking.
+  rate_tau: 0.15             # s
 
 controller:
   sample_time: 0.01          # s, 100 Hz

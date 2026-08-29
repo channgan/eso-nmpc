@@ -9,7 +9,11 @@ import numpy as np
 
 from .config import ManualControlConfig
 from .model.quadrotor import align_quaternion
-from .reference import average_body_rate, inverse_dynamics_attitude_and_thrust
+from .reference import (
+    attach_feedforward_rate_states,
+    average_body_rate,
+    inverse_dynamics_attitude_and_thrust,
+)
 from .trajectory import quintic_segment, smooth_profile
 from .types import Reference
 
@@ -494,7 +498,9 @@ def build_reference_horizon(
         raise ValueError("inverse-dynamics thrust feed-forward violates NMPC limits")
     if np.any(np.abs(feedforward_controls[:, 1:4]) > body_rate_max + tolerance):
         raise ValueError("inverse-dynamics body-rate feed-forward violates NMPC limits")
-    return Reference(states=states, controls=feedforward_controls)
+    return attach_feedforward_rate_states(
+        Reference(states=states, controls=feedforward_controls)
+    )
 
 
 def build_reference_from_trajectory(

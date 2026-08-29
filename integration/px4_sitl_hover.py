@@ -217,7 +217,7 @@ class Px4NmpcHover(Node):
         self.trajectory_records: list[dict[str, object]] = []
         self.model_validation = (
             ModelValidationRecorder(
-                QuadrotorModel(config.model.mass, config.model.gravity),
+                QuadrotorModel(config.model.mass, config.model.gravity, config.model.rate_tau),
                 maximum_interval=0.1,
             )
             if options.validate_model
@@ -419,7 +419,8 @@ class Px4NmpcHover(Node):
         position = np.asarray(self.odometry.position, dtype=float)
         velocity = np.asarray(self.odometry.velocity, dtype=float)
         quaternion = np.asarray(self.odometry.q, dtype=float)
-        return np.r_[position, velocity, quaternion]
+        body_rate = np.asarray(self.odometry.angular_velocity, dtype=float)
+        return np.r_[position, velocity, quaternion, body_rate]
 
     def _manual_control_ready(self, require_neutral: bool = False) -> bool:
         message = self.manual_control
@@ -891,6 +892,11 @@ class Px4NmpcHover(Node):
                     segment="takeoff_hold",
                 )
             )
+            if self.options.reference_source == "direct":
+                # The direct-trajectory path rejects messages older than
+                # reference_timeout (0.2 s).  Keep publishing throughout the
+                # takeoff so flight entry always finds a fresh horizon.
+                self._publish_direct_trajectory(self._kinematic_horizon(0.0))
             if self.takeoff_subphase == "accel":
                 ramp = min(1.0, (now - self.phase_started) / self.options.takeoff_ramp)
                 thrust = self.config.hover_thrust + self.options.takeoff_extra * ramp

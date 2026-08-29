@@ -33,7 +33,7 @@ class ScipyNmpc:
         self._minimize = minimize
         self.config = config
         self.max_iterations = max_iterations
-        self.model = QuadrotorModel(config.model.mass, config.model.gravity)
+        self.model = QuadrotorModel(config.model.mass, config.model.gravity, config.model.rate_tau)
         self._guess: np.ndarray | None = None
         self.last_solve_time = 0.0
         self.last_status = 0
@@ -96,7 +96,7 @@ class ScipyNmpc:
         state = np.asarray(state, dtype=float).copy()
         disturbance = np.zeros(NP) if disturbance is None else np.asarray(disturbance, dtype=float)
         if state.shape != (NX,) or disturbance.shape != (NP,):
-            raise ValueError("state must have shape (10,) and disturbance shape (3,)")
+            raise ValueError(f"state must have shape ({NX},) and disturbance shape ({NP},)")
         if not np.all(np.isfinite(state)) or not np.all(np.isfinite(disturbance)):
             raise ValueError("state or disturbance contains a non-finite value")
         state[6:10] = normalize_quaternion(state[6:10])

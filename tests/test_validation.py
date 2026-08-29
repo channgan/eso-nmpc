@@ -6,7 +6,7 @@ from nmpc.validation import ModelValidationRecorder
 
 
 def _hover_state() -> np.ndarray:
-    return np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0]]
+    return np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
 
 
 def test_exact_hover_model_has_zero_prediction_residuals() -> None:

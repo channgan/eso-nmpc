@@ -20,7 +20,7 @@ def test_hover_solution_is_hover_control() -> None:
         controller = ScipyNmpc(config, max_iterations=2)
     except RuntimeError as error:
         pytest.skip(f"compatible SciPy is not installed: {error}")
-    state = np.r_[np.array([0.0, 0.0, -1.0]), np.zeros(3), [1.0, 0.0, 0.0, 0.0]]
+    state = np.r_[np.array([0.0, 0.0, -1.0]), np.zeros(3), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
     reference = stationary_reference(
         state[:3], config.controller.horizon_steps, config.hover_thrust
     )

@@ -113,10 +113,11 @@ def stationary_reference(
     quaternion = np.array([np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)])
     state = np.r_[position, np.zeros(3), quaternion]
     control = np.array([hover_thrust, 0.0, 0.0, 0.0])
-    return Reference(
+    reference = Reference(
         states=np.repeat(state[None, :], horizon_steps + 1, axis=0),
         controls=np.repeat(control[None, :], horizon_steps, axis=0),
     )
+    return attach_feedforward_rate_states(reference)
 
 
 def _quaternion_product(left: np.ndarray, right: np.ndarray) -> np.ndarray:
@@ -184,7 +185,7 @@ def circular_reference(
         raise ValueError("radius, speed, mass, and gravity must be positive")
 
     angular_rate = speed / radius
-    states = np.empty((horizon_steps + 1, 10))
+    states = np.empty((horizon_steps + 1, 13))
     thrust = np.empty(horizon_steps + 1)
     previous_quaternion: np.ndarray | None = None
     for stage in range(horizon_steps + 1):
@@ -210,7 +211,7 @@ def circular_reference(
         )
         if previous_quaternion is not None:
             quaternion = align_quaternion(quaternion, previous_quaternion)
-        states[stage] = np.r_[position, velocity, quaternion]
+        states[stage, :10] = np.r_[position, velocity, quaternion]
         previous_quaternion = quaternion
 
     controls = np.empty((horizon_steps, 4))
@@ -219,7 +220,24 @@ def circular_reference(
         controls[stage, 1:4] = average_body_rate(
             states[stage, 6:10], states[stage + 1, 6:10], sample_time
         )
-    return Reference(states=states, controls=controls)
+    return attach_feedforward_rate_states(
+        Reference(states=states[:, :10], controls=controls)
+    )
+
+
+def attach_feedforward_rate_states(reference: Reference) -> Reference:
+    """Extend a 10-column state reference with the feedforward body rates.
+
+    The model's last three states are the actual body rates, driven by the
+    rate commands through a first-order lag.  Their reference trajectory is
+    the inverse-dynamics feedforward rate, so the linearization point is a
+    consistent trajectory of the lagged dynamics.
+    """
+    states = np.empty((reference.states.shape[0], 13), dtype=float)
+    states[:, :10] = reference.states
+    states[:-1, 10:13] = reference.controls[:, 1:4]
+    states[-1, 10:13] = reference.controls[-1, 1:4]
+    return Reference(states=states, controls=reference.controls)
 
 
 def align_reference_quaternions(reference: Reference, anchor: np.ndarray) -> Reference:

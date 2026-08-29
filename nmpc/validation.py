@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .model.quadrotor import QuadrotorModel, normalize_quaternion
+from .model.quadrotor import NX, QuadrotorModel, normalize_quaternion
 
 
 @dataclass(frozen=True)
@@ -65,8 +65,8 @@ class ModelValidationRecorder:
         state = np.asarray(state, dtype=float)
         measured_body_rate = np.asarray(measured_body_rate, dtype=float)
         control = np.asarray(control, dtype=float)
-        if state.shape != (10,) or measured_body_rate.shape != (3,) or control.shape != (4,):
-            raise ValueError("validation sample shapes must be state=10, rate=3, control=4")
+        if state.shape != (NX,) or measured_body_rate.shape != (3,) or control.shape != (4,):
+            raise ValueError(f"validation sample shapes must be state={NX}, rate=3, control=4")
         if not all(np.all(np.isfinite(value)) for value in (state, measured_body_rate, control)):
             raise ValueError("validation sample contains a non-finite value")
         self.samples.append(

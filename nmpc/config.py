@@ -14,6 +14,7 @@ import yaml
 class ModelConfig:
     mass: float
     gravity: float
+    rate_tau: float = 0.15
 
 
 @dataclass(frozen=True)

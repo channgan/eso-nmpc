@@ -27,7 +27,7 @@ def test_flatness_mapping_reproduces_requested_acceleration() -> None:
     quaternion, thrust = flatness_attitude_and_thrust(
         acceleration, yaw=0.6, mass=mass, gravity=gravity, disturbance=disturbance
     )
-    state = np.r_[np.zeros(6), quaternion]
+    state = np.r_[np.zeros(6), quaternion, np.zeros(3)]
     control = np.r_[thrust, np.zeros(3)]
     derivative = QuadrotorModel(mass, gravity).continuous_dynamics(
         state, control, disturbance

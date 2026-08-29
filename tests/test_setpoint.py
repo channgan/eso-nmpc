@@ -36,7 +36,7 @@ def test_complete_kinematic_trajectory_converts_to_reference() -> None:
         body_rate_max=np.ones(3),
         quaternion_anchor=np.array([1.0, 0.0, 0.0, 0.0]),
     )
-    assert reference.states.shape == (4, 10)
+    assert reference.states.shape == (4, 13)
     assert reference.controls.shape == (3, 4)
     np.testing.assert_allclose(reference.controls[:, 0], 19.62)
 

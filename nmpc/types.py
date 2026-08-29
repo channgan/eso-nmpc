@@ -36,9 +36,9 @@ class Reference:
         return self.controls
 
     def validate(self, horizon_steps: int) -> None:
-        if self.states.shape != (horizon_steps + 1, 10):
+        if self.states.shape != (horizon_steps + 1, 13):
             raise ValueError(
-                f"reference states must have shape ({horizon_steps + 1}, 10), "
+                f"reference states must have shape ({horizon_steps + 1}, 13), "
                 f"got {self.states.shape}"
             )
         if self.controls.shape != (horizon_steps, 4):

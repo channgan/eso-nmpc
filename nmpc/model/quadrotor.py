@@ -1,4 +1,11 @@
-"""10-state quadrotor model in PX4-compatible NED/FRD coordinates."""
+"""13-state quadrotor model in PX4-compatible NED/FRD coordinates.
+
+The three extra states are the actual body rates, driven by the rate
+commands through a first-order lag.  PX4's inner rate loop adds roughly
+0.15-0.2 s of effective delay in SITL; modelling it keeps the OCP from
+commanding corrections faster than the vehicle can execute them, which is
+what sustained the +/-0.8 rad/s attitude limit cycle against the delay.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-NX = 10
+NX = 13
 NU = 4
 NP = 3
 ACADOS_NP = NP + 4  # translational disturbance + reference quaternion
@@ -86,10 +93,13 @@ def quaternion_attitude_error(q: np.ndarray, q_reference: np.ndarray) -> np.ndar
 class QuadrotorModel:
     mass: float
     gravity: float = 9.80665
+    rate_tau: float = 0.15  # s, first-order lag approximating PX4's rate loop
 
     def __post_init__(self) -> None:
         if self.mass <= 0.0 or self.gravity <= 0.0:
             raise ValueError("mass and gravity must be positive")
+        if self.rate_tau <= 0.0:
+            raise ValueError("rate_tau must be positive")
 
     def continuous_dynamics(
         self, state: np.ndarray, control: np.ndarray, disturbance: np.ndarray | None = None
@@ -100,8 +110,9 @@ class QuadrotorModel:
         acceleration = np.array([0.0, 0.0, self.gravity])
         acceleration -= control[0] / self.mass * rotation[:, 2]
         acceleration += disturbance
-        q_dot = quaternion_derivative(state[6:10], control[1:4])
-        return np.r_[velocity, acceleration, q_dot]
+        q_dot = quaternion_derivative(state[6:10], state[10:13])
+        rate_dot = (control[1:4] - state[10:13]) / self.rate_tau
+        return np.r_[velocity, acceleration, q_dot, rate_dot]
 
     def step_rk4(
         self,
@@ -167,7 +178,8 @@ class QuadrotorModel:
         acceleration = ca.vertcat(0.0, 0.0, self.gravity)
         acceleration -= u[0] / self.mass * body_z_world
         acceleration += d
-        omega_quaternion = ca.vertcat(0.0, u[1], u[2], u[3])
+        actual_rate = x[10:13]
+        omega_quaternion = ca.vertcat(0.0, actual_rate[0], actual_rate[1], actual_rate[2])
         q = x[6:10]
         q_dot = 0.5 * ca.vertcat(
             q[0] * omega_quaternion[0] - ca.dot(q[1:4], omega_quaternion[1:4]),
@@ -175,7 +187,8 @@ class QuadrotorModel:
             q[0] * omega_quaternion[2] + q[2] * omega_quaternion[0] + q[3] * omega_quaternion[1] - q[1] * omega_quaternion[3],
             q[0] * omega_quaternion[3] + q[3] * omega_quaternion[0] + q[1] * omega_quaternion[2] - q[2] * omega_quaternion[1],
         )
-        f_expl = ca.vertcat(x[3:6], acceleration, q_dot)
+        rate_dot = (u[1:4] - actual_rate) / self.rate_tau
+        f_expl = ca.vertcat(x[3:6], acceleration, q_dot, rate_dot)
 
         model = AcadosModel()
         model.name = name

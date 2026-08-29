@@ -4,7 +4,7 @@ from nmpc.model.quadrotor import QuadrotorModel, quaternion_to_rotation
 
 
 def identity_state(position=(0.0, 0.0, 0.0)) -> np.ndarray:
-    return np.r_[position, np.zeros(3), [1.0, 0.0, 0.0, 0.0]]
+    return np.r_[position, np.zeros(3), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
 
 
 def test_hover_is_equilibrium() -> None:
@@ -27,9 +27,21 @@ def test_disturbance_enters_as_world_acceleration() -> None:
 def test_positive_yaw_rate_uses_scalar_first_hamilton_product() -> None:
     model = QuadrotorModel(mass=1.5)
     state = identity_state()
+    state[10:13] = [0.0, 0.0, 2.0]  # actual rate already at the commanded value
     control = np.array([model.mass * model.gravity, 0.0, 0.0, 2.0])
     derivative = model.continuous_dynamics(state, control)
     np.testing.assert_allclose(derivative[6:10], [0.0, 0.0, 0.0, 1.0])
+
+
+def test_rate_lag_drives_actual_rate_toward_command() -> None:
+    model = QuadrotorModel(mass=1.5, rate_tau=0.2)
+    state = identity_state()
+    state[10:13] = [1.0, -0.5, 0.25]
+    control = np.array([model.mass * model.gravity, 0.0, 0.0, 0.5])
+    derivative = model.continuous_dynamics(state, control)
+    np.testing.assert_allclose(
+        derivative[10:13], (control[1:4] - state[10:13]) / 0.2, atol=1.0e-12
+    )
 
 
 def test_rk4_preserves_unit_quaternion() -> None:
