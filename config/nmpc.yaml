@@ -2,12 +2,17 @@ model:
   # Gazebo x500_base: 2.0 kg body + four 0.016076923 kg rotors.
   mass: 2.0643076923         # kg
   gravity: 9.80665           # m/s^2, positive down in NED
-  # First-order lag modelling PX4's rate loop, whose command-to-actuation
-  # delay measures ~0.2 s in SITL.  Without it the OCP commands corrections
-  # faster than the vehicle can execute them (sustained +/-0.8 rad/s limit
-  # cycle); with it the solver keeps its plan inside the achievable rate
-  # response while still using full rate authority for tracking.
-  rate_tau: 0.15             # s
+  # First-order lag modelling PX4's rate loop.  In SITL the command-to-
+  # actuation delay measures ~0.20-0.21 s (delay-aligned rate-tracking
+  # analysis of the recorded flights).  Without a lag state the OCP commands
+  # corrections faster than the vehicle can execute them (sustained
+  # +/-0.8 rad/s limit cycle); with it the solver keeps its plan inside the
+  # achievable rate response while still using full rate authority.
+  # 0.10 s rather than the full delay: the MPC horizon lead covers the
+  # remaining transport delay, and the OCP's lag compensation (rate command
+  # leads the feedforward by tau*rate_dot) would otherwise bang against the
+  # 0.8 rad/s envelope during the 1 m steps (18% saturation at tau 0.15).
+  rate_tau: 0.10             # s
 
 controller:
   sample_time: 0.01          # s, 100 Hz
@@ -38,9 +43,14 @@ weights:
   # at [4,4,2], which is unstable against that delay (phase margin < 0 at
   # ~0.25 s) and produced the observed +/-0.8 rad/s limit cycle.  A high
   # rate weight plus terminal_factor 1.0 spreads the correction over the
-  # whole horizon: measured gain ~2.9 rad/s per rad (roll/pitch), giving
-  # ~50 deg phase margin plus the OCP prediction lead.
-  body_rate: [32.0, 32.0, 16.0]
+  # whole horizon, giving ~50 deg phase margin plus the OCP prediction lead.
+  # With the 13-state rate-lag model the OCP can plan through the lag, so
+  # the rate weight no longer needs to absorb the whole stability margin.
+  # Offline point_1m replay sweep: [32,32,16] is too soft to track the 1 m
+  # step (rmse ~1 m), [8,8,4] re-excites the delay oscillation, [16,16,8]
+  # tracks both steps with rmse 0.13-0.28 m at 1.8-5.8% saturation and
+  # keeps the attitude gain at ~3.9 rad/s per rad (~46 deg phase margin).
+  body_rate: [16.0, 16.0, 8.0]
   terminal_factor: 1.0
 
 limits:

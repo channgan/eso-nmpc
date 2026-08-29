@@ -895,8 +895,21 @@ class Px4NmpcHover(Node):
             if self.options.reference_source == "direct":
                 # The direct-trajectory path rejects messages older than
                 # reference_timeout (0.2 s).  Keep publishing throughout the
-                # takeoff so flight entry always finds a fresh horizon.
-                self._publish_direct_trajectory(self._kinematic_horizon(0.0))
+                # takeoff so flight entry always finds a fresh horizon.  The
+                # preset trajectory does not exist yet (it is built when the
+                # flight reference is anchored), so publish the same stationary
+                # hold as _publish_initial_direct_trajectory.
+                points = self.config.controller.horizon_steps + 1
+                self._publish_direct_trajectory(
+                    KinematicTrajectory(
+                        position=np.repeat(state[:3][None, :], points, axis=0),
+                        velocity=np.zeros((points, 3)),
+                        acceleration=np.zeros((points, 3)),
+                        jerk=np.zeros((points, 3)),
+                        yaw=np.full(points, self.reference_yaw),
+                        sample_time=self.config.controller.sample_time,
+                    )
+                )
             if self.takeoff_subphase == "accel":
                 ramp = min(1.0, (now - self.phase_started) / self.options.takeoff_ramp)
                 thrust = self.config.hover_thrust + self.options.takeoff_extra * ramp
