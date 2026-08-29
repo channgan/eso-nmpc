@@ -77,11 +77,15 @@ class TestOptions:
     takeoff_converge_distance: float = 0.05
     takeoff_converge_speed: float = 0.15
     takeoff_converge_accel: float = 1.0
-    takeoff_converge_timeout: float = 6.0
+    # The convergence gap at subphase entry is ~0.3-0.45 m (odom vs PX4 local
+    # frame offset at the takeoff hold) and closes at ~0.04 m/s; a first
+    # flight after a fresh PX4 boot starts near the top of that range and
+    # needs ~8-10 s to close it.
+    takeoff_converge_timeout: float = 12.0
     takeoff_hold_kp: float = 8.0
     takeoff_hold_kd: float = 4.0
     takeoff_hold_max_delta: float = 5.0
-    takeoff_timeout: float = 12.0
+    takeoff_timeout: float = 20.0
 
     @property
     def circle_duration(self) -> float:

@@ -20,7 +20,7 @@ class FakeAcadosSolver:
         if field == "u":
             return self.control.copy()
         if field == "x":
-            return np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0]]
+            return np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
         raise KeyError(field)
 
 
@@ -35,7 +35,7 @@ def test_runtime_sets_state_reference_and_disturbance_at_every_stage() -> None:
     expected_control = np.array([config.hover_thrust, 0.1, -0.2, 0.3])
     fake = FakeAcadosSolver(expected_control)
     controller = AcadosNmpc(config, solver=fake)
-    state = np.r_[[0.2, 0.1, -0.3], np.zeros(3), [2.0, 0.0, 0.0, 0.0]]
+    state = np.r_[[0.2, 0.1, -0.3], np.zeros(3), [2.0, 0.0, 0.0, 0.0], np.zeros(3)]
     reference = stationary_reference(
         np.array([0.0, 0.0, -1.0]), config.controller.horizon_steps, config.hover_thrust
     )
@@ -63,7 +63,7 @@ def test_runtime_rejects_negative_native_solve_time() -> None:
         np.array([config.hover_thrust, 0.0, 0.0, 0.0])
     )
     controller = AcadosNmpc(config, solver=fake)
-    state = np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0]]
+    state = np.r_[np.zeros(6), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
     reference = stationary_reference(
         np.zeros(3), config.controller.horizon_steps, config.hover_thrust
     )

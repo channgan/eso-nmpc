@@ -13,6 +13,7 @@ Guarding them at runtime makes the suite one-click on an unmodified PX4.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -76,6 +77,8 @@ class ParamGuard:
         self._connection: Any | None = None
         self._originals: dict[str, float] = {}
         self._changed: set[str] = set()
+        self._stop_keepalive = threading.Event()
+        self._keepalive_thread: threading.Thread | None = None
 
     def __enter__(self) -> "ParamGuard":
         self._connect()
@@ -84,14 +87,37 @@ class ParamGuard:
         except BaseException:
             self._close()
             raise
+        # Keep the stream alive for the whole context: PX4's MAVLink module
+        # can pin its stream to a client address and stop talking to an idle
+        # partner, which would break the restore below (and wedge the stream
+        # for later clients until PX4 is restarted).
+        self._stop_keepalive.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop, daemon=True
+        )
+        self._keepalive_thread.start()
         return self
 
     def __exit__(self, *exc_info: object) -> bool:
         try:
+            self._stop_keepalive.set()
             self._restore()
         finally:
             self._close()
         return False
+
+    def _keepalive_loop(self) -> None:
+        mavutil = _require_pymavlink()
+        assert self._connection is not None
+        while not self._stop_keepalive.wait(1.0):
+            try:
+                self._connection.mav.heartbeat_send(
+                    mavutil.mavlink.MAV_TYPE_GCS,
+                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                    0, 0, 0,
+                )
+            except Exception:
+                return
 
     # -- connection -------------------------------------------------------
 

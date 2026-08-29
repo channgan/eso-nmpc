@@ -3,18 +3,22 @@
 这是设计文档中“WSL 阶段”的可执行实现。控制器使用 PX4 一致的 NED 世界系和 FRD 机体系：
 
 ```text
-x = [p_NED(3), v_NED(3), q_body_to_NED(wxyz)]
+x = [p_NED(3), v_NED(3), q_body_to_NED(wxyz), actual_body_rate(3)]
 u = [T_N, body_rate_sp(3)]
 p_model = d_hat_NED(3)
 ```
 
-连续模型为：
+连续模型为（角速度指令经一阶滞后作用到实际角速度，见 `rate_tau`）：
 
 ```text
 p_dot = v
 v_dot = [0, 0, g] - T/m * R(q)[:, 2] + d_hat
-q_dot = 0.5 * q ⊗ [0, body_rate_sp]
+q_dot = 0.5 * q ⊗ [0, actual_body_rate]
+actual_body_rate_dot = (body_rate_sp - actual_body_rate) / rate_tau
 ```
+
+速率滞后状态让 OCP 可以“看穿” PX4 角速度环的指令延迟（SITL 实测
+0.20～0.21 s），否则悬停时会与 +/-0.8 rad/s 的速率包线形成自持极限环。
 
 目标部署后端是 acados 的 `SQP_RTI + PARTIAL_CONDENSING_HPIPM + ERK + GAUSS_NEWTON`。仓库还提供一个较慢的 SciPy direct-shooting 后端，只用于没有 acados 时验证模型和接口，不能用于 100 Hz 部署。
 
@@ -96,7 +100,7 @@ from nmpc.solver.acados_solver import AcadosNmpc
 cfg = load_config()
 controller = AcadosNmpc(cfg)
 
-x = np.r_[position_ned, velocity_ned, quaternion_wxyz]
+x = np.r_[position_ned, velocity_ned, quaternion_wxyz, body_rate_xyz]
 d_hat = np.zeros(3)  # 后续替换为 ESO 的世界系等效加速度估计
 ref = stationary_reference(np.array([0.0, 0.0, -1.0]), cfg.controller.horizon_steps, cfg.hover_thrust)
 command = controller.solve(x, ref, d_hat)
@@ -172,13 +176,59 @@ PX4 平滑器，再订阅 `/fmu/out/nmpc_trajectory`；`--reference-source direc
 `run.log`。测试组根目录同时生成 `suite_summary.json` 与便于直接阅读的
 `suite_summary.md`；单项失败后仍继续运行其余用例，以保留完整基线结果。
 
+### 一键运行的前提：三个 SITL 服务
+
+套件**不会**自己启动或重启服务，运行前先拉起（开跑时自动检查，缺失会
+打印确切的启动命令并以退出码 2 中止）：
+
+```bash
+# 终端 1：Gazebo（PX4 官方 default.sdf 世界）
+gz sim --verbose=1 -r -s <px4树>/Tools/simulation/gz/worlds/default.sdf
+
+# 终端 2：PX4 SITL（保持该终端存活；make 会随源码变更重新编译）
+cd <px4树> && make px4_sitl gz_x500
+
+# 终端 3：MicroXRCE-DDS 代理
+MicroXRCEAgent udp4 -p 8888
+```
+
+注意：若 PX4 已在运行但 MAVLink 长时间无客户端（例如跑过一次套件后隔了很久），
+其 14580 流可能固定到已失效的客户端地址而不再应答 —— 检查会提示
+`restart it`，重启 `make px4_sitl gz_x500` 即可。套件自身通过**一条持久
+MAVLink 连接**完成全部参数读写，不会制造这个状态。
+
+### 参数守卫
+
+套件通过 MAVLink（udp:14580）自动设置飞行依赖的 PX4 参数并在结束时恢复：
+`SIM_BAT_DRAIN=0`（防止长时仿真电池耗尽触发失效保护）、`NAV_DLL_ACT=0`
+（无地面站的 headless SITL 会因数据链丢失中止任务）、`MPC_JERK_AUTO=2`
+（比 PX4 默认 4 m/s³ 更平缓的平滑，避免 1 m 阶跃的倾转角速率需求顶到
+0.8 rad/s 包线）。`--skip-params` 可跳过守卫，`--skip-service-check` 跳过
+服务检查；单用例超时默认 300 s（`--case-timeout`），超时或 Ctrl-C 均会
+终止子进程并保留已有结果（退出码 130）。单独跑一个用例：
+
+```bash
+.venv/bin/python integration/run_sitl_regression.py --cases point_1m
+```
+
+### 运行测试
+
+ROS 2 工作区 source 之后，系统里的 ROS pytest 插件（`launch_testing`）会与
+仓库 venv 的 pytest 冲突，测试请带环境变量：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest
+```
+
+`tests/fake_px4.py` 提供进程内假 PX4（真实 MAVLink 报文编解码），参数守卫与
+服务探测的握手行为（先发心跳再收流、读改写校验、退出恢复）均有单测覆盖。
+
 节点会依次等待估计器稳定、预发送 Offboard 心跳、切换 Offboard、解锁、执行平滑
 起飞/轨迹/下降，最后请求 PX4 Land 并确认解锁。圆轨迹的进入和退出段同时连续匹配
-位置、速度与加速度。无地面站的纯 headless SITL 需要临时将 `NAV_DLL_ACT` 设为
-`0`；测试结束后恢复原值。
+位置、速度与加速度。
 
 ## 当前边界
 
 - 已实现第一阶段 NMPC 数学核心、扰动参数接口、C solver 生成配置、离线模型/接口测试与 benchmark。
 - 已包含 PX4 x500 SITL 的 ROS 2 悬停/圆轨迹验收节点和线性悬停点推力归一化；该映射仅用于当前 x500 仿真。
-- 尚未包含 ESO 和旋转动力学；角速度由 PX4 内环跟踪。接真机前必须重新测量质量并标定推力模型。
+- 尚未包含 ESO；角速度以 PX4 内环加一阶滞后建模（`rate_tau`）。接真机前必须重新测量质量并标定推力模型。
