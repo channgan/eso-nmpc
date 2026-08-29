@@ -205,14 +205,17 @@ class AcadosNmpc:
         reference.validate(n)
         reference = align_reference_quaternions(reference, state[6:10])
 
-        # SQP-RTI needs a meaningful linearization trajectory. Seed the first
-        # call from the reference, then shift the previous solution by one node.
-        if self._last_states is None or self._last_controls is None:
-            state_guess = reference.states.copy()
-            control_guess = reference.feedforward_controls.copy()
-        else:
-            state_guess = np.vstack((self._last_states[1:], self._last_states[-1]))
-            control_guess = np.vstack((self._last_controls[1:], self._last_controls[-1]))
+        # SQP-RTI needs a meaningful linearization trajectory.  Linearize
+        # around the reference trajectory itself rather than continuing the
+        # previous solution: with a single QP iteration, a shifted previous
+        # plan carries its (already rotated) quaternion states into the new
+        # linearization, and the QP then commands large rates to correct its
+        # own guess's divergence -- sustaining an attitude limit cycle against
+        # the ~0.2 s PX4 rate-loop delay.  Seeding from the reference keeps
+        # every stage's linearized error small, so u0 stays proportional to
+        # the true stage-0 error.
+        state_guess = reference.states.copy()
+        control_guess = reference.feedforward_controls.copy()
         state_guess[0] = state
         for stage in range(n):
             self._solver.set(stage, "x", state_guess[stage])

@@ -227,8 +227,12 @@ class Px4NmpcHover(Node):
         # constant translational disturbance parameter that absorbs the thrust
         # curve offset, rotor drag, and other slowly varying model error.
         self.disturbance_estimate = np.zeros(3)
-        self.disturbance_tau = 0.3
-        self.disturbance_clamp = 4.0
+        # Slow on purpose: the residual is built from odometry velocity
+        # differences, which lag the true motion by ~0.1-0.2 s in SITL.  A
+        # fast estimate chases those lag transients and feeds phantom
+        # disturbances back into the OCP, which then tilts to counter them.
+        self.disturbance_tau = 1.0
+        self.disturbance_clamp = 1.0
         self.last_measurement_state: np.ndarray | None = None
         self.last_measurement_dt = 0.0
         self.last_command_thrust = 0.0
@@ -639,6 +643,7 @@ class Px4NmpcHover(Node):
         reference: Reference,
         command: Control,
         saturated: bool,
+        disturbance: np.ndarray | None = None,
     ) -> None:
         reference_state = reference.states[0]
         feedforward = reference.feedforward_controls[0]
@@ -686,6 +691,9 @@ class Px4NmpcHover(Node):
             labels = ("w", "x", "y", "z") if "quaternion" in prefix else ("x", "y", "z")
             for label, value in zip(labels, values):
                 record[f"{prefix}_{label}"] = float(value)
+        if disturbance is not None:
+            for label, value in zip(("x", "y", "z"), disturbance):
+                record[f"disturbance_{label}"] = float(value)
         self.trajectory_records.append(record)
 
     @staticmethod
@@ -1056,7 +1064,7 @@ class Px4NmpcHover(Node):
             if saturated:
                 self.saturation_count += 1
             self._record_solve(
-                odometry_us, elapsed, target, state, reference, command, saturated
+                odometry_us, elapsed, target, state, reference, command, saturated, disturbance
             )
             self._publish_rates(command.thrust, command.body_rate)
             self.last_command_thrust = command.thrust

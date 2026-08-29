@@ -25,9 +25,17 @@ weights:
   # At 1.0 the OCP responds to a 0.1 m error with ~0.3 m/s^2 instead of
   # saturating, keeping the correction inside the modelled bandwidth.
   thrust: 1.0
-  # Conservative while PX4 rate-loop dynamics are not part of the NMPC model.
-  body_rate: [4.0, 4.0, 2.0]
-  terminal_factor: 5.0
+  # The attitude loop closes through PX4's rate controller, which adds
+  # ~0.2 s of delay in SITL, and through lagged odometry attitude.  Offline
+  # QP gain measurements (sweep_ocp.py) show the combined stage+terminal
+  # attitude cost drives a closed-loop attitude gain of ~10 rad/s per rad
+  # at [4,4,2], which is unstable against that delay (phase margin < 0 at
+  # ~0.25 s) and produced the observed +/-0.8 rad/s limit cycle.  A high
+  # rate weight plus terminal_factor 1.0 spreads the correction over the
+  # whole horizon: measured gain ~2.9 rad/s per rad (roll/pitch), giving
+  # ~50 deg phase margin plus the OCP prediction lead.
+  body_rate: [32.0, 32.0, 16.0]
+  terminal_factor: 1.0
 
 limits:
   # Matched to the calibrated direct rate-setpoint throttle range below.
