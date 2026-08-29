@@ -8,11 +8,13 @@ model:
   # corrections faster than the vehicle can execute them (sustained
   # +/-0.8 rad/s limit cycle); with it the solver keeps its plan inside the
   # achievable rate response while still using full rate authority.
-  # 0.10 s rather than the full delay: the MPC horizon lead covers the
-  # remaining transport delay, and the OCP's lag compensation (rate command
-  # leads the feedforward by tau*rate_dot) would otherwise bang against the
-  # 0.8 rad/s envelope during the 1 m steps (18% saturation at tau 0.15).
-  rate_tau: 0.10             # s
+  # 0.15 s (about two thirds of the measured delay) rather than the full
+  # 0.21 s: the horizon lead covers the remaining transport delay.  Real
+  # SITL point_1m comparison: tau 0.10 raises saturation to 27.6% (rmse
+  # 0.156) vs 18.4% (rmse 0.133) at tau 0.15 -- with the faster model the
+  # OCP plans snappier feedback corrections and bangs the envelope harder,
+  # which the offline replay (predicted 6.4% at tau 0.10) does not capture.
+  rate_tau: 0.15             # s
 
 controller:
   sample_time: 0.01          # s, 100 Hz

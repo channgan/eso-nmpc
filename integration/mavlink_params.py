@@ -34,9 +34,15 @@ class GuardedParameter:
 # eventually trips PX4 failsafes mid-case.  NAV_DLL_ACT arms datalink-loss
 # handling, which can abort the mission while the NMPC child (which talks to
 # PX4 through uXRCE-DDS, not MAVLink) is flying.
+# MPC_JERK_AUTO at the PX4 default of 4 m/s^3 ramps the tilt of the smoothed
+# 1 m steps at 0.41 rad/s; with feedback and lag compensation the NMPC demand
+# then bangs against the 0.8 rad/s body-rate envelope (18% command saturation
+# in SITL).  Halving the jerk halves the feedforward demand, keeping the
+# conservative envelope intact.
 DEFAULT_PARAMETERS = (
     GuardedParameter("SIM_BAT_DRAIN", 0.0, "disable simulated battery drain"),
     GuardedParameter("NAV_DLL_ACT", 0.0, "disable datalink loss actions"),
+    GuardedParameter("MPC_JERK_AUTO", 2.0, "gentler trajectory smoothing for the 1 m steps"),
 )
 
 
@@ -95,6 +101,14 @@ class ParamGuard:
         start = time.monotonic()
         heartbeat = None
         while time.monotonic() - start < self.heartbeat_timeout:
+            # A udpout connection transmits nothing until it sends a packet,
+            # and PX4 only streams to addresses it has heard from.  Announce
+            # ourselves as a GCS so the heartbeat stream starts.
+            self._connection.mav.heartbeat_send(
+                mavutil.mavlink.MAV_TYPE_GCS,
+                mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                0, 0, 0,
+            )
             heartbeat = self._connection.recv_match(
                 type="HEARTBEAT", blocking=True, timeout=1.0
             )
