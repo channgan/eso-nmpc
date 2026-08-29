@@ -59,8 +59,14 @@ limits:
   # Matched to the calibrated direct rate-setpoint throttle range below.
   thrust_min: 3.3278         # N
   thrust_max: 27.7314        # N
-  # Conservative PX4/acados NMPC envelope used by the reference open-source project.
-  body_rate_max: [0.8, 0.8, 0.8]  # rad/s
+  # Rate envelope.  0.8 rad/s was the conservative envelope inherited from
+  # the reference open-source project; SITL shows the 1 m step demand
+  # (feedforward 0.4 rad/s + feedback correction + lag lead) pins the command
+  # at the limit on 18% of metric solves.  Raising to 1.0 lets the OCP use
+  # the authority it actually asks for (~0.9-1.0 rad/s) without changing the
+  # maneuver.  Keep the delay-limit-cycle margin in mind before raising
+  # further: the value exists to stay inside the modelled rate bandwidth.
+  body_rate_max: [1.0, 1.0, 1.0]  # rad/s
   # Keep the NMPC flight envelope aligned with the corresponding PX4 MPC
   # parameters. Velocity is expressed in NED, while PX4 stores tilt in degrees.
   # Deployment horizontal flight-speed ceiling, shared with PX4 position modes.

@@ -46,7 +46,7 @@ def test_heartbeat_check_reports_dead_server() -> None:
 def test_guard_applies_and_restores_parameters() -> None:
     # 0.125 is exact in REAL32 (the MAVLink param wire format); 0.1 would not
     # round-trip bit-exactly.
-    params = {"SIM_BAT_DRAIN": 0.5, "NAV_DLL_ACT": 0.125, "MPC_JERK_AUTO": 4.0}
+    params = {"SIM_BAT_DRAIN": 0.5, "NAV_DLL_ACT": 0.125}
     with FakePx4(params=params) as px4:
         guard = ParamGuard(
             parameters=DEFAULT_PARAMETERS,
@@ -63,10 +63,10 @@ def test_guard_applies_and_restores_parameters() -> None:
 
 
 def test_guard_leaves_untouched_parameters_alone() -> None:
-    params = {"MPC_JERK_AUTO": 2.0}
+    params = {"NAV_DLL_ACT": 0.0}
     with FakePx4(params=params) as px4:
         guard = ParamGuard(
-            parameters=(DEFAULT_PARAMETERS[-1],),
+            parameters=(DEFAULT_PARAMETERS[1],),
             connection_string=f"udpout:127.0.0.1:{px4.port}",
         )
         with guard:

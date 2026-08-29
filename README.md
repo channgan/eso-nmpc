@@ -201,11 +201,10 @@ MAVLink 连接**完成全部参数读写，不会制造这个状态。
 
 套件通过 MAVLink（udp:14580）自动设置飞行依赖的 PX4 参数并在结束时恢复：
 `SIM_BAT_DRAIN=0`（防止长时仿真电池耗尽触发失效保护）、`NAV_DLL_ACT=0`
-（无地面站的 headless SITL 会因数据链丢失中止任务）、`MPC_JERK_AUTO=2`
-（比 PX4 默认 4 m/s³ 更平缓的平滑，避免 1 m 阶跃的倾转角速率需求顶到
-0.8 rad/s 包线）。`--skip-params` 可跳过守卫，`--skip-service-check` 跳过
-服务检查；单用例超时默认 300 s（`--case-timeout`），超时或 Ctrl-C 均会
-终止子进程并保留已有结果（退出码 130）。单独跑一个用例：
+（无地面站的 headless SITL 会因数据链丢失中止任务）。`--skip-params`
+可跳过守卫，`--skip-service-check` 跳过服务检查；单用例超时默认 300 s
+（`--case-timeout`），超时或 Ctrl-C 均会终止子进程并保留已有结果
+（退出码 130）。单独跑一个用例：
 
 ```bash
 .venv/bin/python integration/run_sitl_regression.py --cases point_1m
