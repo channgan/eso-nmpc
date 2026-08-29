@@ -31,7 +31,11 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from nmpc.config import NmpcConfig, load_config
-from nmpc.model.quadrotor import QuadrotorModel, quaternion_attitude_error
+from nmpc.model.quadrotor import (
+    QuadrotorModel,
+    quaternion_attitude_error,
+    quaternion_to_rotation,
+)
 from nmpc.px4 import thrust_newton_to_px4
 from nmpc.setpoint import (
     KinematicTrajectory,
@@ -64,6 +68,20 @@ class TestOptions:
     transition: float = 3.0
     descent: float = 4.0
     settle: float = 1.5
+    takeoff_extra: float = 3.5
+    takeoff_ramp: float = 0.8
+    takeoff_height: float = 0.15
+    takeoff_brake_extra: float = 1.5
+    takeoff_settle_speed: float = 0.05
+    takeoff_brake_timeout: float = 1.5
+    takeoff_converge_distance: float = 0.05
+    takeoff_converge_speed: float = 0.15
+    takeoff_converge_accel: float = 1.0
+    takeoff_converge_timeout: float = 6.0
+    takeoff_hold_kp: float = 8.0
+    takeoff_hold_kd: float = 4.0
+    takeoff_hold_max_delta: float = 5.0
+    takeoff_timeout: float = 12.0
 
     @property
     def circle_duration(self) -> float:
@@ -155,6 +173,10 @@ class Px4NmpcHover(Node):
 
         self.phase = "WAIT_ODOMETRY"
         self.phase_started = monotonic()
+        self.takeoff_subphase = ""
+        self.takeoff_subphase_started = 0.0
+        self.takeoff_hold_z = 0.0
+        self.takeoff_last_converge_log = 0.0
         self.last_odometry_time = 0.0
         self.last_command_time = 0.0
         self.last_log_time = 0.0
@@ -201,6 +223,15 @@ class Px4NmpcHover(Node):
             if options.validate_model
             else None
         )
+        # World-frame acceleration residual estimator: the OCP model exposes a
+        # constant translational disturbance parameter that absorbs the thrust
+        # curve offset, rotor drag, and other slowly varying model error.
+        self.disturbance_estimate = np.zeros(3)
+        self.disturbance_tau = 0.3
+        self.disturbance_clamp = 4.0
+        self.last_measurement_state: np.ndarray | None = None
+        self.last_measurement_dt = 0.0
+        self.last_command_thrust = 0.0
         # Keep outbound PX4 timestamps in the synchronised epoch domain, but
         # advance them from CLOCK_MONOTONIC.  WSL can step CLOCK_REALTIME when
         # it resynchronises with the Windows host; publishing that step would
@@ -406,8 +437,8 @@ class Px4NmpcHover(Node):
             )
         return True
 
-    def _initialize_reference_source(self) -> None:
-        assert self.initial_position is not None
+    def _initialize_reference_source(self, anchor_position: np.ndarray) -> None:
+        anchor = np.asarray(anchor_position, dtype=float)
         parameters = PresetTrajectoryParameters(
             mode=self.options.trajectory if self.options.trajectory != "rc" else "hover",
             altitude=self.options.altitude,
@@ -420,18 +451,18 @@ class Px4NmpcHover(Node):
             speed=self.options.speed,
         )
         self.preset_source = PresetTrajectory(
-            self.initial_position, self.reference_yaw, parameters
+            anchor, self.reference_yaw, parameters
         )
         if self.options.trajectory == "rc":
-            hover_position = self.initial_position + np.array(
+            hover_position = anchor + np.array(
                 [0.0, 0.0, -self.options.altitude]
             )
             self.rc_source = RcVelocityReference(
                 hover_position,
                 self.reference_yaw,
                 self.config.manual_control,
-                minimum_z=float(self.initial_position[2] - 1.8),
-                maximum_z=float(self.initial_position[2] - 0.3),
+                minimum_z=float(anchor[2] - 1.8),
+                maximum_z=float(anchor[2] - 0.3),
             )
 
     def _trajectory_sample(self, time_s: float) -> KinematicSetpoint:
@@ -446,6 +477,41 @@ class Px4NmpcHover(Node):
             return self.options.ascent + self.options.rc_duration
         assert self.preset_source is not None
         return self.preset_source.duration
+
+    def _estimate_disturbance(self, state: np.ndarray, dt: float) -> np.ndarray:
+        """Low-pass the measured-vs-modelled acceleration residual (world frame).
+
+        The OCP model exposes a constant translational disturbance parameter on
+        every stage; a slow estimate absorbs the thrust-curve offset, rotor
+        drag, and other slowly varying model error so the MPC does not have to
+        chase them with the terminal cost alone.
+        """
+        if self.last_measurement_state is None:
+            self.last_measurement_state = state.copy()
+            self.last_measurement_dt = dt
+            return self.disturbance_estimate.copy()
+        step = dt if dt > 0.0 and np.isfinite(dt) else self.last_measurement_dt
+        step = max(step, 1.0e-3)
+        measured_acceleration = (state[3:6] - self.last_measurement_state[3:6]) / step
+        self.last_measurement_state = state.copy()
+        self.last_measurement_dt = step
+        if self.initial_position is not None and state[2] >= self.initial_position[2] - 0.2:
+            # Near or on the ground the contact reaction dominates the residual;
+            # hold the last in-flight estimate instead of winding it up.
+            return self.disturbance_estimate.copy()
+        rotation = quaternion_to_rotation(state[6:10])
+        modelled_acceleration = np.array([0.0, 0.0, self.config.model.gravity])
+        modelled_acceleration -= self.last_command_thrust / self.config.model.mass * rotation[:, 2]
+        residual = measured_acceleration - modelled_acceleration
+        alpha = min(1.0, step / self.disturbance_tau)
+        self.disturbance_estimate += alpha * (residual - self.disturbance_estimate)
+        np.clip(
+            self.disturbance_estimate,
+            -self.disturbance_clamp,
+            self.disturbance_clamp,
+            out=self.disturbance_estimate,
+        )
+        return self.disturbance_estimate.copy()
 
     def _reference_from_trajectory(self, trajectory: KinematicTrajectory) -> Reference:
         assert self.reference_quaternion is not None
@@ -496,6 +562,19 @@ class Px4NmpcHover(Node):
             sample_time=float(message.sample_time),
         )
         return self._reference_from_trajectory(trajectory)
+
+    def _trajectory_point0(self) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return the first point (position, velocity, acceleration) of a fresh PX4 trajectory."""
+        message = self.nmpc_trajectory
+        if message is None or monotonic() - self.last_nmpc_trajectory_time > 0.3:
+            return None
+        points = int(message.points)
+        if points < 1:
+            return None
+        position = np.asarray(message.position, dtype=float).reshape(-1, 3)[0]
+        velocity = np.asarray(message.velocity, dtype=float).reshape(-1, 3)[0]
+        acceleration = np.asarray(message.acceleration, dtype=float).reshape(-1, 3)[0]
+        return position, velocity, acceleration
 
     def _px4_smoothed_reference(self) -> Reference:
         assert self.reference_quaternion is not None
@@ -776,15 +855,125 @@ class Px4NmpcHover(Node):
                 self.initial_position = state[:3].copy()
                 self.reference_quaternion = _yaw_quaternion(state[6:10])
                 self.reference_yaw = _quaternion_yaw(self.reference_quaternion)
-                self.flight_started = now
-                self.flight_started_px4_us = int(self.odometry.timestamp)
-                self.last_solved_odometry_us = 0
-                self.last_trajectory_odometry_us = int(self.odometry.timestamp)
-                self.trajectory_elapsed = 0.0
-                self._initialize_reference_source()
-                self._set_phase("FLIGHT")
+                self.takeoff_subphase = "accel"
+                self.takeoff_subphase_started = now
+                self._set_phase("TAKEOFF")
             elif now - self.phase_started > 6.0:
                 self._start_disarming("arming timeout", safety_abort=True)
+            return
+
+        if self.phase == "TAKEOFF":
+            # Lift off with a thrust profile before handing authority to the
+            # NMPC.  The controller model has no ground model, so solving from
+            # ground contact feeds it a state its prediction cannot explain.
+            # The takeoff ends settled near hover: the flight reference is
+            # anchored at the takeoff-end state, so the first OCP solve sees
+            # ~zero tracking error instead of a climb it must violently brake.
+            state = self._state()
+            if not np.all(np.isfinite(state)):
+                return
+            # Keep the PX4 reference pinned to the vehicle so the smoothed
+            # trajectory follows the takeoff instead of lagging behind it.
+            self._publish_position_reference(
+                KinematicSetpoint(
+                    position=state[:3],
+                    velocity=np.zeros(3),
+                    acceleration=np.zeros(3),
+                    yaw=self.reference_yaw,
+                    segment="takeoff_hold",
+                )
+            )
+            if self.takeoff_subphase == "accel":
+                ramp = min(1.0, (now - self.phase_started) / self.options.takeoff_ramp)
+                thrust = self.config.hover_thrust + self.options.takeoff_extra * ramp
+                if state[2] < self.initial_position[2] - self.options.takeoff_height:
+                    self.takeoff_subphase = "brake"
+                    self.takeoff_subphase_started = now
+            elif self.takeoff_subphase == "brake":
+                # Brake the climb back to a near-hover.
+                thrust = self.config.hover_thrust - self.options.takeoff_brake_extra
+                if (
+                    abs(state[5]) < self.options.takeoff_settle_speed
+                    or now - self.takeoff_subphase_started > self.options.takeoff_brake_timeout
+                ):
+                    self.takeoff_subphase = "converge"
+                    self.takeoff_subphase_started = now
+                    self.takeoff_hold_z = state[2]
+            else:
+                # Hold the vehicle with a gentle vertical P-D loop.  An
+                # open-loop hover thrust leaves a residual acceleration that
+                # slowly drags the vehicle away, and the smoothed trajectory's
+                # approach speed vanishes near the target (sqrt(2 a d)), so it
+                # can never close the last decimeters against a drifting
+                # vehicle.  A truly held vehicle gives it a static target to
+                # settle onto.
+                thrust = self.config.hover_thrust + (
+                    self.options.takeoff_hold_kp * (state[2] - self.takeoff_hold_z)
+                    + self.options.takeoff_hold_kd * state[5]
+                )
+                thrust = float(
+                    np.clip(
+                        thrust,
+                        self.config.hover_thrust - self.options.takeoff_hold_max_delta,
+                        self.config.hover_thrust + self.options.takeoff_hold_max_delta,
+                    )
+                )
+            self._publish_rates(thrust, np.zeros(3))
+            self.last_command_thrust = thrust
+            body_z_down = 1.0 - 2.0 * (state[7] ** 2 + state[8] ** 2)
+            tilt = float(np.arccos(np.clip(body_z_down, -1.0, 1.0)))
+            if (
+                tilt > np.deg2rad(25.0)
+                or float(np.linalg.norm(state[:2] - self.initial_position[:2])) > 0.5
+                or now - self.phase_started > self.options.takeoff_timeout
+            ):
+                self._start_disarming("takeoff failed", safety_abort=True)
+                return
+            if self.takeoff_subphase == "converge":
+                trajectory_point0 = self._trajectory_point0()
+                if now - self.takeoff_last_converge_log > 0.5:
+                    self.takeoff_last_converge_log = now
+                    if trajectory_point0 is not None:
+                        dpos = float(np.linalg.norm(trajectory_point0[0] - state[:3]))
+                        dvel = float(np.linalg.norm(trajectory_point0[1] - state[3:6]))
+                        dacc = float(np.linalg.norm(trajectory_point0[2]))
+                        self.get_logger().info(
+                            f"converge dpos={dpos:.3f} dvel={dvel:.3f} dacc={dacc:.3f} "
+                            f"veh vz={state[5]:+.3f} z={state[2]:+.3f} "
+                            f"p0 z={trajectory_point0[0][2]:+.3f} vz={trajectory_point0[1][2]:+.3f}"
+                        )
+                    else:
+                        self.get_logger().info("converge trajectory unavailable")
+                # The trajectory must match the vehicle in position, velocity
+                # AND acceleration before the flight starts: the OCP trusts
+                # point0's acceleration for its thrust feedforward, so entering
+                # while the smoother is still braking (or chasing) makes the
+                # first solve command a wildly wrong thrust.
+                converged = trajectory_point0 is not None and (
+                    float(np.linalg.norm(trajectory_point0[0] - state[:3]))
+                    < self.options.takeoff_converge_distance
+                    and float(np.linalg.norm(trajectory_point0[1] - state[3:6]))
+                    < self.options.takeoff_converge_speed
+                    and float(np.linalg.norm(trajectory_point0[2]))
+                    < self.options.takeoff_converge_accel
+                )
+                if converged:
+                    anchor = state[:3].copy()
+                    self.flight_started = now
+                    self.flight_started_px4_us = int(self.odometry.timestamp)
+                    self.last_solved_odometry_us = 0
+                    self.last_trajectory_odometry_us = int(self.odometry.timestamp)
+                    self.trajectory_elapsed = 0.0
+                    self._initialize_reference_source(anchor)
+                    self._set_phase("FLIGHT")
+                elif (
+                    now - self.takeoff_subphase_started
+                    > self.options.takeoff_converge_timeout
+                ):
+                    self._start_disarming(
+                        "takeoff failed: trajectory did not converge", safety_abort=True
+                    )
+                    return
             return
 
         if self.phase == "FLIGHT":
@@ -848,7 +1037,8 @@ class Px4NmpcHover(Node):
                 return
             try:
                 reference = self._reference(elapsed)
-                command = self.controller.solve(state, reference, np.zeros(3))
+                disturbance = self._estimate_disturbance(state, trajectory_step)
+                command = self.controller.solve(state, reference, disturbance)
             except Exception as error:
                 self._start_disarming(f"solver failure: {error}", safety_abort=True)
                 return
@@ -869,6 +1059,7 @@ class Px4NmpcHover(Node):
                 odometry_us, elapsed, target, state, reference, command, saturated
             )
             self._publish_rates(command.thrust, command.body_rate)
+            self.last_command_thrust = command.thrust
             tracked_position = reference.states[0, :3]
             if (
                 self.model_validation is not None

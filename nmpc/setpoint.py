@@ -79,17 +79,22 @@ class KinematicTrajectory:
             velocity[:, 2] > vertical_speed_max_down + tolerance
         ):
             raise ValueError("trajectory exceeds vertical speed limit")
+        # PX4's PositionSmoothing enforces MPC_ACC_HOR per axis, so the envelope
+        # contract is per-axis here (a 3D norm of the same value would be stricter
+        # than the PX4 smoother itself and reject its own output on turns).
         if np.any(
-            np.linalg.norm(acceleration[:, :2], axis=1)
-            > horizontal_acceleration_max + tolerance
+            np.abs(acceleration[:, :2]) > horizontal_acceleration_max + tolerance
         ):
             raise ValueError("trajectory exceeds horizontal acceleration limit")
         if np.any(acceleration[:, 2] < -vertical_acceleration_max_up - tolerance) or np.any(
             acceleration[:, 2] > vertical_acceleration_max_down + tolerance
         ):
             raise ValueError("trajectory exceeds vertical acceleration limit")
+        # PX4's VelocitySmoothing enforces MPC_JERK_AUTO per axis; check per axis
+        # so that multi-axis re-plans (jerk on two axes at once) are not rejected
+        # for exceeding the single-axis bound.
         if self.jerk is not None and np.any(
-            np.linalg.norm(np.asarray(self.jerk, dtype=float), axis=1) > jerk_max + tolerance
+            np.abs(np.asarray(self.jerk, dtype=float)) > jerk_max + tolerance
         ):
             raise ValueError("trajectory exceeds jerk limit")
 

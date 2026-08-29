@@ -14,14 +14,19 @@ controller:
 
 weights:
   position: [20.0, 20.0, 40.0]
-  velocity: [12.0, 12.0, 8.0]
+  velocity: [12.0, 12.0, 12.0]
   # SO(3) logarithmic attitude-error weights [roll, pitch, yaw] in rad.
   attitude: [12.0, 12.0, 2.0]
   # Control weights penalize NMPC output minus inverse-dynamics feed-forward,
   # not absolute thrust or body rate.
-  thrust: 0.08
+  # A near-zero thrust weight turns the OCP into a relay: the solver slams
+  # between thrust_min and thrust_max to erase position errors instantly,
+  # and the loop oscillates against the PX4 rate-loop delay (~0.2 s in SITL).
+  # At 1.0 the OCP responds to a 0.1 m error with ~0.3 m/s^2 instead of
+  # saturating, keeping the correction inside the modelled bandwidth.
+  thrust: 1.0
   # Conservative while PX4 rate-loop dynamics are not part of the NMPC model.
-  body_rate: [2.0, 2.0, 1.0]
+  body_rate: [4.0, 4.0, 2.0]
   terminal_factor: 5.0
 
 limits:
