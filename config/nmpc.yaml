@@ -1,0 +1,71 @@
+model:
+  # Gazebo x500_base: 2.0 kg body + four 0.016076923 kg rotors.
+  mass: 2.0643076923         # kg
+  gravity: 9.80665           # m/s^2, positive down in NED
+
+controller:
+  sample_time: 0.01          # s, 100 Hz
+  horizon_steps: 30
+  reference_timeout: 0.20    # s, maximum accepted PX4 trajectory/interface age
+  qp_solver_cond_N: 5
+  nlp_solver_type: SQP_RTI
+  integrator_type: ERK
+  levenberg_marquardt: 1.0e-4
+
+weights:
+  position: [20.0, 20.0, 40.0]
+  velocity: [12.0, 12.0, 8.0]
+  # SO(3) logarithmic attitude-error weights [roll, pitch, yaw] in rad.
+  attitude: [12.0, 12.0, 2.0]
+  # Control weights penalize NMPC output minus inverse-dynamics feed-forward,
+  # not absolute thrust or body rate.
+  thrust: 0.08
+  # Conservative while PX4 rate-loop dynamics are not part of the NMPC model.
+  body_rate: [2.0, 2.0, 1.0]
+  terminal_factor: 5.0
+
+limits:
+  # Matched to the calibrated direct rate-setpoint throttle range below.
+  thrust_min: 3.3278         # N
+  thrust_max: 27.7314        # N
+  # Conservative PX4/acados NMPC envelope used by the reference open-source project.
+  body_rate_max: [0.8, 0.8, 0.8]  # rad/s
+  # Keep the NMPC flight envelope aligned with the corresponding PX4 MPC
+  # parameters. Velocity is expressed in NED, while PX4 stores tilt in degrees.
+  # Deployment horizontal flight-speed ceiling, shared with PX4 position modes.
+  horizontal_speed_max: 2.0        # m/s
+  vertical_speed_max_up: 3.0       # m/s, MPC_Z_VEL_MAX_UP (-vz in NED)
+  vertical_speed_max_down: 1.5     # m/s, MPC_Z_VEL_MAX_DN (+vz in NED)
+  horizontal_acceleration_max: 2.0 # m/s^2, MPC_ACC_HOR(_MAX)
+  vertical_acceleration_max_up: 4.0   # m/s^2, MPC_ACC_UP_MAX
+  vertical_acceleration_max_down: 3.0 # m/s^2, MPC_ACC_DOWN_MAX
+  jerk_max: 4.0                    # m/s^3, MPC_JERK_AUTO/MAX
+  tilt_max_deg: 45.0               # deg, MPC_TILTMAX_AIR
+
+px4:
+  # Measured in gz_x500 while publishing VehicleRatesSetpoint directly.
+  # This is intentionally different from the position-controller MPC_THR_HOVER.
+  hover_throttle: 0.73
+  throttle_min: 0.12
+  throttle_max: 1.00
+
+manual_control:
+  # ManualControlSetpoint stick deadzone and loss timeout.
+  deadzone: 0.08
+  timeout: 0.50                    # s
+  # Sticks command velocity in the current yaw-heading frame.
+  max_horizontal_speed: 2.0       # m/s, shared PX4/NMPC deployment ceiling
+  max_vertical_speed: 0.5         # m/s; positive throttle moves up
+  max_yaw_rate: 0.5               # rad/s
+  max_horizontal_acceleration: 2.0  # m/s^2, matches MPC_ACC_HOR(_MAX)
+  max_vertical_acceleration: 0.6    # m/s^2
+  max_yaw_acceleration: 1.0         # rad/s^2
+  # Prevent a sustained command from winding the reference far ahead of the vehicle.
+  max_horizontal_position_lead: 0.8  # m
+  max_vertical_position_lead: 0.4    # m
+
+code_generation:
+  model_name: quadrotor_nmpc
+  # Current acados requires a basename; it writes this inside code_export_directory.
+  json_file: quadrotor_nmpc.json
+  code_export_directory: generated/quadrotor_nmpc
