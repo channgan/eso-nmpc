@@ -207,6 +207,9 @@ class Px4NmpcHover(Node):
         self.last_trajectory_odometry_us = 0
         self.trajectory_elapsed = 0.0
         self.timestamp_jump_count = 0
+        self.timestamp_sample_age_invalid_count = 0
+        self.last_odometry_receive_steady_us = 0
+        self.last_odometry_sample_steady_us = 0
         self.finished = False
         self.success = False
         self.finish_reason = "not finished"
@@ -264,11 +267,36 @@ class Px4NmpcHover(Node):
 
     def _on_odometry(self, message: VehicleOdometry) -> None:
         self.odometry = message
-        self.last_odometry_time = monotonic()
+        receive_steady = monotonic()
+        self.last_odometry_time = receive_steady
+        timestamp_sample = int(getattr(message, "timestamp_sample", 0))
+        if timestamp_sample <= 0:
+            timestamp_sample = int(message.timestamp)
+        receive_steady_us = round(receive_steady * 1.0e6)
+        sample_age_us = int(message.timestamp) - timestamp_sample
+        # timestamp and timestamp_sample are converted together by uXRCE, so
+        # their difference remains meaningful even if the absolute epoch is
+        # corrected.  Express the acquisition time on CLOCK_MONOTONIC by
+        # subtracting that estimator age from the local receive time.  DDS
+        # transport delay is intentionally retained as part of the real
+        # command-to-response path seen by the companion computer.
+        if 0 <= sample_age_us <= 100_000:
+            sample_steady_us = receive_steady_us - sample_age_us
+        else:
+            self.timestamp_sample_age_invalid_count += 1
+            sample_steady_us = receive_steady_us
+        self.last_odometry_receive_steady_us = receive_steady_us
+        self.last_odometry_sample_steady_us = sample_steady_us
         # Tie the Offboard heartbeat to the high-rate PX4 stream as well as the
         # wall timer so simulator clock catch-up cannot create a heartbeat gap.
         if self.phase != "DISARMING" and not self.finished:
             self._publish_mode()
+
+    def _odometry_sample_timestamp_us(self) -> int:
+        """Return the estimator sample time, falling back for old PX4 messages."""
+        assert self.odometry is not None
+        timestamp_sample = int(getattr(self.odometry, "timestamp_sample", 0))
+        return timestamp_sample if timestamp_sample > 0 else int(self.odometry.timestamp)
 
     def _on_status(self, message: VehicleStatus) -> None:
         self.status = message
@@ -297,14 +325,16 @@ class Px4NmpcHover(Node):
         message.body_rate = True
         self.mode_publisher.publish(message)
 
-    def _publish_rates(self, thrust_newton: float, body_rate: np.ndarray) -> None:
+    def _publish_rates(self, thrust_newton: float, body_rate: np.ndarray) -> int:
         message = VehicleRatesSetpoint()
         message.timestamp = self._now_us()
         message.roll = float(body_rate[0])
         message.pitch = float(body_rate[1])
         message.yaw = float(body_rate[2])
         message.thrust_body = [0.0, 0.0, thrust_newton_to_px4(thrust_newton, self.config)]
+        publish_steady_us = round(monotonic() * 1.0e6)
         self.rates_publisher.publish(message)
+        return publish_steady_us
 
     def _publish_position_reference(self, setpoint: KinematicSetpoint) -> None:
         message = NmpcReferenceSetpoint()
@@ -645,6 +675,7 @@ class Px4NmpcHover(Node):
     def _record_solve(
         self,
         odometry_us: int,
+        command_publish_us: int,
         elapsed: float,
         target: KinematicSetpoint,
         state: np.ndarray,
@@ -666,7 +697,16 @@ class Px4NmpcHover(Node):
             else monotonic() - self.last_direct_trajectory_time
         )
         record: dict[str, object] = {
+            # timestamp_us remains the canonical state sample timestamp for
+            # compatibility with existing analysis scripts.
             "timestamp_us": odometry_us,
+            "state_sample_timestamp_us": odometry_us,
+            "state_publication_timestamp_us": int(self.odometry.timestamp),
+            "state_sample_steady_timestamp_us": self.last_odometry_sample_steady_us,
+            "state_receive_steady_timestamp_us": self.last_odometry_receive_steady_us,
+            "command_publish_steady_timestamp_us": command_publish_us,
+            "sample_to_command_latency_ms": 1.0e-3
+            * (command_publish_us - self.last_odometry_sample_steady_us),
             "trajectory_time_s": elapsed,
             "segment": target.segment,
             "reference_source": self.options.reference_source,
@@ -741,6 +781,18 @@ class Px4NmpcHover(Node):
         metric_records = [
             row for row in self.trajectory_records if bool(row["metric_enabled"])
         ]
+        sample_to_command_latency = np.asarray(
+            [row["sample_to_command_latency_ms"] for row in self.trajectory_records],
+            dtype=float,
+        )
+
+        def latency_percentile(percentile: float) -> float:
+            return (
+                float(np.percentile(sample_to_command_latency, percentile))
+                if sample_to_command_latency.size
+                else float("nan")
+            )
+
         self.success = bool(
             landed
             and not self.safety_abort
@@ -766,6 +818,24 @@ class Px4NmpcHover(Node):
             "solve_p99_ms": p99_ms,
             "solve_max_ms": max_ms,
             "odometry_timestamp_jump_count": self.timestamp_jump_count,
+            "time_alignment": {
+                "state_interval_clock": "PX4 VehicleOdometry.timestamp_sample",
+                "delay_clock": "CLOCK_MONOTONIC corrected by PX4 sample age",
+                "timestamp_sample_age_invalid_count": (
+                    self.timestamp_sample_age_invalid_count
+                ),
+                "sample_to_command_latency_ms": {
+                    "count": int(sample_to_command_latency.size),
+                    "median": latency_percentile(50.0),
+                    "p95": latency_percentile(95.0),
+                    "p99": latency_percentile(99.0),
+                    "max": (
+                        float(np.max(sample_to_command_latency))
+                        if sample_to_command_latency.size
+                        else float("nan")
+                    ),
+                },
+            },
             "tracking_position_rmse_m": tracking_rmse,
             "tracking_position_max_m": tracking_max,
             "input_saturation_fraction": saturation_fraction,
@@ -994,9 +1064,10 @@ class Px4NmpcHover(Node):
                 if converged:
                     anchor = state[:3].copy()
                     self.flight_started = now
-                    self.flight_started_px4_us = int(self.odometry.timestamp)
+                    sample_timestamp_us = self._odometry_sample_timestamp_us()
+                    self.flight_started_px4_us = sample_timestamp_us
                     self.last_solved_odometry_us = 0
-                    self.last_trajectory_odometry_us = int(self.odometry.timestamp)
+                    self.last_trajectory_odometry_us = sample_timestamp_us
                     self.trajectory_elapsed = 0.0
                     self._initialize_reference_source(anchor)
                     self._set_phase("FLIGHT")
@@ -1017,7 +1088,7 @@ class Px4NmpcHover(Node):
             if self.options.trajectory == "rc" and not self._manual_control_ready():
                 self._start_disarming("manual-control input lost or invalid", safety_abort=True)
                 return
-            odometry_us = int(self.odometry.timestamp)
+            odometry_us = self._odometry_sample_timestamp_us()
             if odometry_us == self.last_solved_odometry_us:
                 return
             self.last_solved_odometry_us = odometry_us
@@ -1089,10 +1160,20 @@ class Px4NmpcHover(Node):
             )
             if saturated:
                 self.saturation_count += 1
+            # Publish immediately after a successful solve, then associate the
+            # exact command publication time with the earlier estimator sample.
+            command_publish_us = self._publish_rates(command.thrust, command.body_rate)
             self._record_solve(
-                odometry_us, elapsed, target, state, reference, command, saturated, disturbance
+                odometry_us,
+                command_publish_us,
+                elapsed,
+                target,
+                state,
+                reference,
+                command,
+                saturated,
+                disturbance,
             )
-            self._publish_rates(command.thrust, command.body_rate)
             self.last_command_thrust = command.thrust
             tracked_position = reference.states[0, :3]
             if (
@@ -1106,6 +1187,8 @@ class Px4NmpcHover(Node):
                     np.asarray(self.odometry.angular_velocity, dtype=float),
                     command.as_array(),
                     target.segment,
+                    control_timestamp_us=command_publish_us,
+                    measurement_timestamp_us=self.last_odometry_sample_steady_us,
                 )
             if now - self.last_log_time >= 0.5:
                 self.last_log_time = now

@@ -84,3 +84,49 @@ def test_rate_alignment_recovers_known_command_delay() -> None:
     ]
     np.testing.assert_allclose(aligned["best_delay_s_per_axis"], delay, atol=0.002)
     np.testing.assert_allclose(aligned["rmse_per_axis"], 0.0, atol=1e-12)
+
+
+def test_rate_alignment_uses_command_publication_time() -> None:
+    model = QuadrotorModel(2.0)
+    recorder = ModelValidationRecorder(model)
+    state = _hover_state()
+    delay = 0.04
+    publish_offset = 0.007
+    time_step = 0.01
+    timestamps = np.arange(0.0, 1.01, time_step)
+
+    def signal(time: float) -> np.ndarray:
+        return np.array(
+            [
+                np.sin(2.0 * np.pi * 2.0 * time),
+                np.sin(2.0 * np.pi * 3.0 * time + 0.2),
+                np.sin(2.0 * np.pi * 4.0 * time - 0.1),
+            ]
+        )
+
+    command_times = timestamps + publish_offset
+    command_history = np.asarray([signal(time) for time in command_times])
+    px4_epoch_us = 1_700_000_000_000_000
+    for index, timestamp in enumerate(timestamps):
+        command_time = command_times[index]
+        control = np.r_[model.mass * model.gravity, command_history[index]]
+        measured = np.array(
+            [
+                np.interp(timestamp - delay, command_times, command_history[:, axis])
+                for axis in range(3)
+            ]
+        )
+        recorder.add(
+            px4_epoch_us + round(timestamp * 1e6),
+            state,
+            measured,
+            control,
+            control_timestamp_us=round(command_time * 1e6),
+            measurement_timestamp_us=round(timestamp * 1e6),
+        )
+
+    aligned = recorder.summary((0.01,))[
+        "delay_aligned_body_rate_tracking_error_rad_s"
+    ]
+    np.testing.assert_allclose(aligned["best_delay_s_per_axis"], delay, atol=0.002)
+    np.testing.assert_allclose(aligned["rmse_per_axis"], 0.0, atol=1e-12)

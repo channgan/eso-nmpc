@@ -11,7 +11,17 @@ from .model.quadrotor import NX, QuadrotorModel, normalize_quaternion
 
 @dataclass(frozen=True)
 class ModelValidationSample:
+    # State/measurement acquisition time in the PX4-synchronised clock domain.
     timestamp_us: int
+    # Measurement acquisition time expressed on the same monotonic clock as
+    # control_timestamp_us.  It is separate from timestamp_us so model
+    # integration can retain PX4/simulation time while delay estimation remains
+    # immune to host wall-clock corrections and PX4 epoch changes.
+    measurement_timestamp_us: int
+    # Time at which the associated command was actually published.  This is
+    # deliberately separate from timestamp_us: solving and ROS transport occur
+    # after the state was sampled.
+    control_timestamp_us: int
     state: np.ndarray
     measured_body_rate: np.ndarray
     control: np.ndarray
@@ -61,6 +71,8 @@ class ModelValidationRecorder:
         measured_body_rate: np.ndarray,
         control: np.ndarray,
         segment: str = "unknown",
+        control_timestamp_us: int | None = None,
+        measurement_timestamp_us: int | None = None,
     ) -> None:
         state = np.asarray(state, dtype=float)
         measured_body_rate = np.asarray(measured_body_rate, dtype=float)
@@ -72,6 +84,12 @@ class ModelValidationRecorder:
         self.samples.append(
             ModelValidationSample(
                 int(timestamp_us),
+                int(
+                    timestamp_us
+                    if measurement_timestamp_us is None
+                    else measurement_timestamp_us
+                ),
+                int(timestamp_us if control_timestamp_us is None else control_timestamp_us),
                 state.copy(),
                 measured_body_rate.copy(),
                 control.copy(),
@@ -129,7 +147,19 @@ class ModelValidationRecorder:
         Commands are linearly interpolated only inside continuous timestamp regions, so
         an odometry/timesync jump cannot be selected as an apparently useful delay.
         """
-        timestamps = np.asarray([sample.timestamp_us for sample in self.samples], dtype=float) * 1e-6
+        measurement_times = (
+            np.asarray(
+                [sample.measurement_timestamp_us for sample in self.samples],
+                dtype=float,
+            )
+            * 1e-6
+        )
+        command_times = (
+            np.asarray(
+                [sample.control_timestamp_us for sample in self.samples], dtype=float
+            )
+            * 1e-6
+        )
         commands = np.asarray([sample.control[1:4] for sample in self.samples], dtype=float)
         measured = np.asarray([sample.measured_body_rate for sample in self.samples], dtype=float)
         delays = np.arange(0.0, maximum_delay + 0.5 * delay_step, delay_step)
@@ -142,24 +172,30 @@ class ModelValidationRecorder:
             best_delay = 0.0
             best_error = np.empty(0, dtype=float)
             for delay in delays:
-                target_times = timestamps - delay
-                right = np.searchsorted(timestamps, target_times, side="right")
+                # A measurement at t is compared with the command published at
+                # t-delay.  Command events and measurements have independent
+                # timestamps; treating them as simultaneous biases the result
+                # by solver and message-transport latency.
+                target_times = measurement_times - delay
+                right = np.searchsorted(command_times, target_times, side="right")
                 left = right - 1
-                valid = (left >= 0) & (right < timestamps.size)
+                valid = (left >= 0) & (right < command_times.size)
                 valid_indices = np.flatnonzero(valid)
                 if valid_indices.size == 0:
                     continue
                 left_valid = left[valid_indices]
                 right_valid = right[valid_indices]
-                spans = timestamps[right_valid] - timestamps[left_valid]
+                spans = command_times[right_valid] - command_times[left_valid]
                 continuous = (spans > 0.0) & (spans <= self.maximum_interval)
                 valid_indices = valid_indices[continuous]
                 left_valid = left_valid[continuous]
                 right_valid = right_valid[continuous]
                 if valid_indices.size < 2:
                     continue
-                spans = timestamps[right_valid] - timestamps[left_valid]
-                fractions = (target_times[valid_indices] - timestamps[left_valid]) / spans
+                spans = command_times[right_valid] - command_times[left_valid]
+                fractions = (
+                    target_times[valid_indices] - command_times[left_valid]
+                ) / spans
                 interpolated = commands[left_valid, axis] + fractions * (
                     commands[right_valid, axis] - commands[left_valid, axis]
                 )
