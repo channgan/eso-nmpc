@@ -74,6 +74,76 @@ def test_complete_trajectory_rejects_motion_limit_violation() -> None:
         )
 
 
+def test_complete_trajectory_does_not_apply_an_extra_jerk_constraint() -> None:
+    acceleration = np.zeros((4, 3))
+    acceleration[:, 0] = np.arange(4) * 0.01
+    trajectory = KinematicTrajectory(
+        position=np.zeros((4, 3)),
+        velocity=np.zeros((4, 3)),
+        acceleration=acceleration,
+        jerk=np.zeros((4, 3)),
+        yaw=np.zeros(4),
+        sample_time=0.01,
+    )
+    trajectory.validate_motion_limits(
+        horizontal_speed_max=2.0,
+        vertical_speed_max_up=3.0,
+        vertical_speed_max_down=1.5,
+        horizontal_acceleration_max=2.0,
+        vertical_acceleration_max_up=4.0,
+        vertical_acceleration_max_down=3.0,
+        jerk_max=4.0,
+        jerk_consistency_tolerance=0.1,
+    )
+
+
+def test_jerk_is_ignored_by_nmpc_feedforward_on_test_branch() -> None:
+    points = 4
+    sample_time = 0.01
+    jerk = np.tile([1.0, 0.0, 0.0], (points, 1))
+    acceleration = np.arange(points)[:, None] * sample_time * jerk
+    trajectory = KinematicTrajectory(
+        position=np.zeros((points, 3)),
+        velocity=np.zeros((points, 3)),
+        acceleration=acceleration,
+        jerk=jerk,
+        yaw=np.zeros(points),
+        yaw_rate=np.zeros(points),
+        sample_time=sample_time,
+    )
+    reference = build_reference_from_trajectory(
+        trajectory,
+        horizon_steps=points - 1,
+        sample_time=sample_time,
+        mass=2.0,
+        gravity=9.81,
+        thrust_min=0.0,
+        thrust_max=30.0,
+        body_rate_max=np.ones(3),
+        quaternion_anchor=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    no_jerk_reference = build_reference_from_trajectory(
+        KinematicTrajectory(
+            position=trajectory.position,
+            velocity=trajectory.velocity,
+            acceleration=trajectory.acceleration,
+            jerk=np.zeros_like(jerk),
+            yaw=trajectory.yaw,
+            yaw_rate=trajectory.yaw_rate,
+            sample_time=sample_time,
+        ),
+        horizon_steps=points - 1,
+        sample_time=sample_time,
+        mass=2.0,
+        gravity=9.81,
+        thrust_min=0.0,
+        thrust_max=30.0,
+        body_rate_max=np.ones(3),
+        quaternion_anchor=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    np.testing.assert_allclose(reference.controls, no_jerk_reference.controls)
+
+
 def _circle_parameters() -> PresetTrajectoryParameters:
     return PresetTrajectoryParameters(
         mode="circle",

@@ -50,6 +50,7 @@ class LimitConfig:
     vertical_acceleration_max_up: float
     vertical_acceleration_max_down: float
     jerk_max: float
+    jerk_consistency_tolerance: float
     tilt_max_deg: float
 
 
@@ -134,6 +135,7 @@ def load_config(path: str | Path = "config/nmpc.yaml") -> NmpcConfig:
         vertical_acceleration_max_up=float(limits_raw["vertical_acceleration_max_up"]),
         vertical_acceleration_max_down=float(limits_raw["vertical_acceleration_max_down"]),
         jerk_max=float(limits_raw["jerk_max"]),
+        jerk_consistency_tolerance=float(limits_raw["jerk_consistency_tolerance"]),
         tilt_max_deg=float(limits_raw["tilt_max_deg"]),
     )
     code_generation = CodeGenerationConfig(**raw["code_generation"])
@@ -177,6 +179,7 @@ def _validate(config: NmpcConfig) -> None:
             config.limits.vertical_acceleration_max_up,
             config.limits.vertical_acceleration_max_down,
             config.limits.jerk_max,
+            config.limits.jerk_consistency_tolerance,
         ]
     )
     if np.any(trajectory_limits <= 0.0):

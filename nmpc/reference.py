@@ -149,6 +149,40 @@ def average_body_rate(
     return angle / sample_time * delta[1:] / vector_norm
 
 
+def inverse_dynamics_body_rate(
+    acceleration: np.ndarray,
+    jerk: np.ndarray,
+    yaw: float,
+    yaw_rate: float,
+    sample_time: float,
+    mass: float,
+    gravity: float,
+    disturbance: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute discrete body-rate feed-forward from jerk and yaw rate.
+
+    Jerk advances the desired acceleration over one controller interval.  The
+    resulting change of inverse-dynamics attitude, together with yaw rate, is
+    converted to the constant body rate used by the discrete NMPC model.
+    """
+    jerk = np.asarray(jerk, dtype=float)
+    if jerk.shape != (3,) or not np.all(np.isfinite(jerk)):
+        raise ValueError("jerk must be a finite three-vector")
+    if not np.isfinite(yaw_rate) or sample_time <= 0.0:
+        raise ValueError("yaw_rate must be finite and sample_time positive")
+    quaternion, _ = inverse_dynamics_attitude_and_thrust(
+        acceleration, yaw, mass, gravity, disturbance
+    )
+    next_quaternion, _ = inverse_dynamics_attitude_and_thrust(
+        np.asarray(acceleration, dtype=float) + jerk * sample_time,
+        yaw + yaw_rate * sample_time,
+        mass,
+        gravity,
+        disturbance,
+    )
+    return average_body_rate(quaternion, next_quaternion, sample_time)
+
+
 def circular_reference(
     time: float,
     horizon_steps: int,

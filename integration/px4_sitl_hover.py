@@ -361,12 +361,14 @@ class Px4NmpcHover(Node):
         samples = [sample(elapsed + stage * sample_time) for stage in range(points)]
         acceleration = np.asarray([item.acceleration for item in samples], dtype=float)
         jerk = np.gradient(acceleration, sample_time, axis=0, edge_order=1)
+        yaw = np.asarray([item.yaw for item in samples], dtype=float)
         return KinematicTrajectory(
             position=np.asarray([item.position for item in samples], dtype=float),
             velocity=np.asarray([item.velocity for item in samples], dtype=float),
             acceleration=acceleration,
             jerk=jerk,
-            yaw=np.asarray([item.yaw for item in samples], dtype=float),
+            yaw=yaw,
+            yaw_rate=np.gradient(np.unwrap(yaw), sample_time, edge_order=1),
             sample_time=sample_time,
         )
 
@@ -607,6 +609,7 @@ class Px4NmpcHover(Node):
             acceleration=np.asarray(message.acceleration, dtype=float).reshape(-1, 3)[:points],
             jerk=np.asarray(message.jerk, dtype=float).reshape(-1, 3)[:points],
             yaw=np.asarray(message.yaw, dtype=float)[:points],
+            yaw_rate=np.asarray(message.yaw_rate, dtype=float)[:points],
             sample_time=float(message.sample_time),
         )
         return self._reference_from_trajectory(trajectory)

@@ -141,6 +141,17 @@ def _px4_heartbeat_error(timeout: float = 5.0, port: int = MAVLINK_PORT) -> str 
         connection.close()
 
 
+def _process_running_exact(name: str) -> bool:
+    """Return whether Linux has a process whose comm exactly matches name."""
+    try:
+        subprocess.run(
+            ["pgrep", "-x", name], check=True, capture_output=True, timeout=5.0
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
 def check_services(
     *,
     px4_ok: bool,
@@ -159,12 +170,19 @@ def check_services(
     then keeps transmitting into a dead socket until PX4 is restarted.
     """
     checks: dict[str, tuple[bool, str]] = {}
-    if px4_ok:
+    px4_process_ok = _process_running_exact("px4")
+    if px4_ok and px4_process_ok:
         checks["px4"] = (True, f"MAVLink heartbeat on udp:{MAVLINK_PORT}")
     else:
+        problem = px4_heartbeat_error or "no MAVLink heartbeat"
+        if px4_ok and not px4_process_ok:
+            problem = (
+                "MAVLink heartbeat received, but no actual `px4` process exists "
+                "(a stale or unrelated MAVLink endpoint may be answering)"
+            )
         checks["px4"] = (
             False,
-            f"{px4_heartbeat_error or 'no MAVLink heartbeat'}. Start with "
+            f"{problem}. Start with "
             f"`make px4_sitl gz_x500` in the PX4 tree; if PX4 is already "
             f"running, restart it -- its MAVLink stream can wedge onto a "
             f"stale client address.",

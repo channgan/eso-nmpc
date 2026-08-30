@@ -22,7 +22,7 @@ def test_native_hover_and_disturbance_parameter() -> None:
 
     config = load_config()
     controller = AcadosNmpc(config)
-    state = np.r_[[0.0, 0.0, -1.0], np.zeros(3), [1.0, 0.0, 0.0, 0.0]]
+    state = np.r_[[0.0, 0.0, -1.0], np.zeros(3), [1.0, 0.0, 0.0, 0.0], np.zeros(3)]
     reference = stationary_reference(
         state[:3], config.controller.horizon_steps, config.hover_thrust
     )

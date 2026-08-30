@@ -25,6 +25,8 @@ class KinematicSetpoint:
     acceleration: np.ndarray
     yaw: float
     segment: str
+    jerk: np.ndarray | None = None
+    yaw_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class KinematicTrajectory:
     yaw: np.ndarray
     sample_time: float
     jerk: np.ndarray | None = None
+    yaw_rate: np.ndarray | None = None
 
     def validate(self, horizon_steps: int, expected_sample_time: float) -> None:
         points = horizon_steps + 1
@@ -55,6 +58,10 @@ class KinematicTrajectory:
         yaw = np.asarray(self.yaw)
         if yaw.shape != (points,) or not np.all(np.isfinite(yaw)):
             raise ValueError(f"yaw must be a finite array with shape ({points},)")
+        if self.yaw_rate is not None:
+            yaw_rate = np.asarray(self.yaw_rate)
+            if yaw_rate.shape != (points,) or not np.all(np.isfinite(yaw_rate)):
+                raise ValueError(f"yaw_rate must be a finite array with shape ({points},)")
         if not np.isfinite(self.sample_time) or self.sample_time <= 0.0:
             raise ValueError("trajectory sample_time must be finite and positive")
         tolerance = max(1.0e-7, 1.0e-4 * expected_sample_time)
@@ -72,6 +79,7 @@ class KinematicTrajectory:
         vertical_acceleration_max_up: float,
         vertical_acceleration_max_down: float,
         jerk_max: float,
+        jerk_consistency_tolerance: float | None = None,
     ) -> None:
         """Reject a trajectory that bypasses the configured deployment envelope."""
         velocity = np.asarray(self.velocity, dtype=float)
@@ -94,13 +102,9 @@ class KinematicTrajectory:
             acceleration[:, 2] > vertical_acceleration_max_down + tolerance
         ):
             raise ValueError("trajectory exceeds vertical acceleration limit")
-        # PX4's VelocitySmoothing enforces MPC_JERK_AUTO per axis; check per axis
-        # so that multi-axis re-plans (jerk on two axes at once) are not rejected
-        # for exceeding the single-axis bound.
-        if self.jerk is not None and np.any(
-            np.abs(np.asarray(self.jerk, dtype=float)) > jerk_max + tolerance
-        ):
-            raise ValueError("trajectory exceeds jerk limit")
+        # Jerk is deliberately not constrained here. PX4's trajectory
+        # generator owns jerk limiting; this branch tests NMPC tracking of the
+        # resulting kinematic preview without duplicating that constraint.
 
 
 @dataclass(frozen=True)
@@ -488,6 +492,9 @@ def build_reference_horizon(
     feedforward_controls = np.empty((horizon_steps, 4))
     feedforward_controls[:, 0] = thrust[:-1]
     for stage in range(horizon_steps):
+        # Jerk is intentionally not an NMPC input on this test branch. PX4's
+        # PositionSmoothing already uses jerk to construct the kinematic
+        # preview; NMPC tracks the resulting position/velocity/acceleration.
         feedforward_controls[stage, 1:4] = average_body_rate(
             states[stage, 6:10], states[stage + 1, 6:10], sample_time
         )

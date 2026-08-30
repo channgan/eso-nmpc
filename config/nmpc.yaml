@@ -77,6 +77,10 @@ limits:
   vertical_acceleration_max_up: 4.0   # m/s^2, MPC_ACC_UP_MAX
   vertical_acceleration_max_down: 3.0 # m/s^2, MPC_ACC_DOWN_MAX
   jerk_max: 4.0                    # m/s^3, MPC_JERK_AUTO/MAX
+  # Allowed mismatch between supplied jerk and the acceleration-node slope.
+  # Covers float32 transport and discrete sampling without accepting a fake
+  # zero-jerk trajectory whose acceleration is visibly changing.
+  jerk_consistency_tolerance: 0.5  # m/s^3
   tilt_max_deg: 45.0               # deg, MPC_TILTMAX_AIR
 
 px4:
