@@ -20,22 +20,45 @@ class ModelConfig:
 @dataclass(frozen=True)
 class ControllerConfig:
     sample_time: float
+    control_period: float
     horizon_steps: int
     reference_timeout: float
     qp_solver_cond_N: int
     nlp_solver_type: str
     integrator_type: str
     levenberg_marquardt: float
+    warm_start: bool = True
 
 
 @dataclass(frozen=True)
-class WeightConfig:
-    position: np.ndarray
-    velocity: np.ndarray
-    attitude: np.ndarray
-    thrust: float
-    body_rate: np.ndarray
-    terminal_factor: float
+class CostScaleConfig:
+    """Engineering error scales used to make every cost residual dimensionless."""
+
+    weight_factor: float
+    position_error_m: np.ndarray
+    velocity_error_m_s: np.ndarray
+    attitude_error_deg: np.ndarray
+    thrust_correction_n: float
+    body_rate_correction_deg_s: np.ndarray
+
+    @property
+    def state_weights(self) -> np.ndarray:
+        """Physical-coordinate Q diagonal with the configured global factor."""
+        state_scales = np.r_[
+            self.position_error_m,
+            self.velocity_error_m_s,
+            np.deg2rad(self.attitude_error_deg),
+        ]
+        return self.weight_factor / np.square(state_scales)
+
+    @property
+    def control_weights(self) -> np.ndarray:
+        """Physical-coordinate R diagonal with the configured global factor."""
+        control_scales = np.r_[
+            self.thrust_correction_n,
+            np.deg2rad(self.body_rate_correction_deg_s),
+        ]
+        return self.weight_factor / np.square(control_scales)
 
 
 @dataclass(frozen=True)
@@ -83,14 +106,24 @@ class ManualControlConfig:
 
 
 @dataclass(frozen=True)
+class EsoConfig:
+    enabled: bool
+    bandwidth_rad_s: float
+    disturbance_clamp_m_s2: float
+    activation_delay_s: float
+    innovation_limit_m_s: float
+
+
+@dataclass(frozen=True)
 class NmpcConfig:
     model: ModelConfig
     controller: ControllerConfig
-    weights: WeightConfig
+    cost_scales: CostScaleConfig
     limits: LimitConfig
     code_generation: CodeGenerationConfig
     px4: Px4Config
     manual_control: ManualControlConfig
+    eso: EsoConfig
 
     @property
     def hover_thrust(self) -> float:
@@ -114,14 +147,16 @@ def load_config(path: str | Path = "config/nmpc.yaml") -> NmpcConfig:
 
     model = ModelConfig(**raw["model"])
     controller = ControllerConfig(**raw["controller"])
-    weights_raw = raw["weights"]
-    weights = WeightConfig(
-        position=_vector(weights_raw, "position", 3),
-        velocity=_vector(weights_raw, "velocity", 3),
-        attitude=_vector(weights_raw, "attitude", 3),
-        thrust=float(weights_raw["thrust"]),
-        body_rate=_vector(weights_raw, "body_rate", 3),
-        terminal_factor=float(weights_raw["terminal_factor"]),
+    scales_raw = raw["cost_scales"]
+    cost_scales = CostScaleConfig(
+        weight_factor=float(scales_raw.get("weight_factor", 1.0)),
+        position_error_m=_vector(scales_raw, "position_error_m", 3),
+        velocity_error_m_s=_vector(scales_raw, "velocity_error_m_s", 3),
+        attitude_error_deg=_vector(scales_raw, "attitude_error_deg", 3),
+        thrust_correction_n=float(scales_raw["thrust_correction_n"]),
+        body_rate_correction_deg_s=_vector(
+            scales_raw, "body_rate_correction_deg_s", 3
+        ),
     )
     limits_raw = raw["limits"]
     limits = LimitConfig(
@@ -141,8 +176,15 @@ def load_config(path: str | Path = "config/nmpc.yaml") -> NmpcConfig:
     code_generation = CodeGenerationConfig(**raw["code_generation"])
     px4 = Px4Config(**raw["px4"])
     manual_control = ManualControlConfig(**raw["manual_control"])
+    eso = EsoConfig(**raw.get("eso", {
+        "enabled": False,
+        "bandwidth_rad_s": 3.0,
+        "disturbance_clamp_m_s2": 1.0,
+        "activation_delay_s": 1.0,
+        "innovation_limit_m_s": 1.0,
+    }))
     config = NmpcConfig(
-        model, controller, weights, limits, code_generation, px4, manual_control
+        model, controller, cost_scales, limits, code_generation, px4, manual_control, eso
     )
     _validate(config)
     return config
@@ -153,10 +195,25 @@ def _validate(config: NmpcConfig) -> None:
         raise ValueError("mass and gravity must be positive")
     if config.controller.sample_time <= 0.0:
         raise ValueError("sample_time must be positive")
+    if config.controller.control_period <= 0.0:
+        raise ValueError("control_period must be positive")
+    if config.controller.control_period < config.controller.sample_time:
+        raise ValueError("control_period must be at least sample_time")
     if config.controller.horizon_steps < 2:
         raise ValueError("horizon_steps must be at least 2")
     if config.controller.reference_timeout <= config.controller.sample_time:
         raise ValueError("reference_timeout must exceed sample_time")
+    eso = config.eso
+    if not isinstance(eso.enabled, bool):
+        raise ValueError("eso.enabled must be boolean")
+    if not np.isfinite(eso.bandwidth_rad_s) or eso.bandwidth_rad_s <= 0.0:
+        raise ValueError("eso.bandwidth_rad_s must be finite and positive")
+    if not np.isfinite(eso.disturbance_clamp_m_s2) or eso.disturbance_clamp_m_s2 <= 0.0:
+        raise ValueError("eso.disturbance_clamp_m_s2 must be finite and positive")
+    if not np.isfinite(eso.activation_delay_s) or eso.activation_delay_s < 0.0:
+        raise ValueError("eso.activation_delay_s must be finite and non-negative")
+    if not np.isfinite(eso.innovation_limit_m_s) or eso.innovation_limit_m_s <= 0.0:
+        raise ValueError("eso.innovation_limit_m_s must be finite and positive")
     if not 1 <= config.controller.qp_solver_cond_N <= config.controller.horizon_steps:
         raise ValueError("qp_solver_cond_N must lie in [1, horizon_steps]")
     if config.limits.thrust_min < 0.0:
@@ -209,15 +266,20 @@ def _validate(config: NmpcConfig) -> None:
     )
     if np.any(manual_positive_values <= 0.0):
         raise ValueError("manual-control limits must be positive")
-    all_weights = np.concatenate(
+    all_cost_scales = np.concatenate(
         (
-            config.weights.position,
-            config.weights.velocity,
-            config.weights.attitude,
-            [config.weights.thrust],
-            config.weights.body_rate,
-            [config.weights.terminal_factor],
+            config.cost_scales.position_error_m,
+            config.cost_scales.velocity_error_m_s,
+            config.cost_scales.attitude_error_deg,
+            [config.cost_scales.thrust_correction_n],
+            config.cost_scales.body_rate_correction_deg_s,
         )
     )
-    if np.any(all_weights < 0.0):
-        raise ValueError("cost weights cannot be negative")
+    if not np.all(np.isfinite(all_cost_scales)):
+        raise ValueError("cost scales must be finite")
+    if np.any(all_cost_scales <= 0.0):
+        raise ValueError("cost scales must be positive")
+    if not np.isfinite(config.cost_scales.weight_factor):
+        raise ValueError("cost weight_factor must be finite")
+    if config.cost_scales.weight_factor <= 0.0:
+        raise ValueError("cost weight_factor must be positive")
