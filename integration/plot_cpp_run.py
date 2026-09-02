@@ -50,7 +50,18 @@ def main() -> int:
 
     if is_flight_log:
         timestamp = data["px4_timestamp_sample_us"]
-        if not np.any(timestamp > 0.0):
+        # PX4 timestamps are the canonical cross-log clock, but a restarted
+        # SITL can emit an occasional stale/short timestamp during DDS
+        # handover.  Do not let one such sample stretch the plot to 1e9 s;
+        # use the monotonic host receive clock for visualization in that case.
+        timestamp_delta = np.diff(timestamp)
+        timestamp_valid = (
+            np.all(np.isfinite(timestamp))
+            and np.all(timestamp > 0.0)
+            and np.all(timestamp_delta > 0.0)
+            and np.all(timestamp_delta < 1.0e7)
+        )
+        if not timestamp_valid:
             timestamp = data["t_rx_steady_s"] * 1.0e6
         time_s = (timestamp - timestamp[0]) * 1.0e-6
         position = np.column_stack([data[f"measured_p_{axis}"] for axis in "xyz"])

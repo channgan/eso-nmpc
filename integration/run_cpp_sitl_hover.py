@@ -34,7 +34,8 @@ from nmpc.trajectory import quintic_segment, smooth_profile
 
 class CppHoverSupervisor(Node):
     def __init__(self, output_directory: Path, trajectory: str = "hover",
-                 radius: float = 2.0, speed: float = 1.0) -> None:
+                 radius: float = 2.0, speed: float = 1.0,
+                 point_hold_duration: float = 2.0) -> None:
         super().__init__("cpp_nmpc_hover_supervisor")
         self.output_directory = output_directory
         if trajectory not in ("hover", "point_1m", "circle", "figure8"):
@@ -42,6 +43,7 @@ class CppHoverSupervisor(Node):
         self.trajectory = trajectory
         self.radius = float(radius)
         self.speed = float(speed)
+        self.point_hold_duration = float(point_hold_duration)
         self.points = 31
         self.sample_time = 0.02
         self.ascent_duration = 4.0
@@ -49,7 +51,8 @@ class CppHoverSupervisor(Node):
         self.point_hold_duration = 4.0
         self.hold_duration = (2.0 * self.transition_duration + 2.0 * np.pi * self.radius / self.speed
                               if self.trajectory in ("circle", "figure8") else
-                              2.0 * self.transition_duration + self.point_hold_duration
+                              self.point_hold_duration + 8.0 *
+                              (self.transition_duration + self.point_hold_duration)
                               if self.trajectory == "point_1m" else 6.0)
         self.altitude = 1.0
         self.phase = "WAIT"
@@ -155,27 +158,41 @@ class CppHoverSupervisor(Node):
         if self.trajectory == "hover":
             return hover, np.zeros(3), np.zeros(3)
         if self.trajectory == "point_1m":
-            target = hover + np.array([1.0, 0.0, 0.0])
-            outbound_end = self.ascent_duration + self.transition_duration
-            hold_end = outbound_end + self.point_hold_duration
-            inbound_end = hold_end + self.transition_duration
-            if time_s < outbound_end:
+            # Keep the historical four-direction point test: center -> +X ->
+            # center -> -X -> center -> +Y -> center -> -Y -> center.
+            # Every leg is a quintic, acceleration-limited transition followed
+            # by the same dwell used by the Python baseline.
+            positions = (
+                hover,
+                hover + np.array([self.radius, 0.0, 0.0]),
+                hover,
+                hover + np.array([-self.radius, 0.0, 0.0]),
+                hover,
+                hover + np.array([0.0, self.radius, 0.0]),
+                hover,
+                hover + np.array([0.0, -self.radius, 0.0]),
+                hover,
+            )
+            sequence_time = time_s - self.ascent_duration
+            sequence_duration = self.point_hold_duration + 8.0 * (
+                self.transition_duration + self.point_hold_duration
+            )
+            if sequence_time < self.point_hold_duration:
+                return positions[0], np.zeros(3), np.zeros(3)
+            move_time = sequence_time - self.point_hold_duration
+            block = self.transition_duration + self.point_hold_duration
+            index = min(int(move_time // block) + 1, len(positions) - 1)
+            local_time = move_time - (index - 1) * block
+            if local_time < self.transition_duration:
                 return quintic_segment(
-                    time_s - self.ascent_duration,
+                    local_time,
                     self.transition_duration,
-                    hover,
-                    target,
+                    positions[index - 1],
+                    positions[index],
                 )
-            if time_s < hold_end:
-                return target, np.zeros(3), np.zeros(3)
-            if time_s < inbound_end:
-                return quintic_segment(
-                    time_s - hold_end,
-                    self.transition_duration,
-                    target,
-                    hover,
-                )
-            return hover, np.zeros(3), np.zeros(3)
+            if sequence_time < sequence_duration:
+                return positions[index], np.zeros(3), np.zeros(3)
+            return positions[-1], np.zeros(3), np.zeros(3)
         omega = self.speed / self.radius
         circle_start = hover if self.trajectory == "figure8" else hover + np.array([self.radius, 0.0, 0.0])
         tangent_velocity = (
@@ -240,6 +257,9 @@ class CppHoverSupervisor(Node):
         position = np.asarray([sample[0] for sample in samples], dtype=np.float32)
         velocity = np.asarray([sample[1] for sample in samples], dtype=np.float32)
         acceleration = np.asarray([sample[2] for sample in samples], dtype=np.float32)
+        jerk = np.empty_like(acceleration)
+        jerk[:-1] = np.diff(acceleration, axis=0) / self.sample_time
+        jerk[-1] = jerk[-2] if self.points > 1 else 0.0
         message = NmpcTrajectorySetpoint()
         message.timestamp = self._timestamp_us()
         self.trajectory_sequence += 1
@@ -249,6 +269,7 @@ class CppHoverSupervisor(Node):
         message.position[: 3 * self.points] = position.reshape(-1).tolist()
         message.velocity[: 3 * self.points] = velocity.reshape(-1).tolist()
         message.acceleration[: 3 * self.points] = acceleration.reshape(-1).tolist()
+        message.jerk[: 3 * self.points] = jerk.reshape(-1).tolist()
         message.yaw[: self.points] = [self.initial_yaw] * self.points
         self.trajectory_publisher.publish(message)
         return position[0].astype(float)
@@ -404,6 +425,7 @@ def main() -> int:
     parser.add_argument("--trajectory", choices=("hover", "point_1m", "circle", "figure8"), default="hover")
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--speed", type=float, default=1.0)
+    parser.add_argument("--step-dwell", type=float, default=2.0)
     parser.add_argument("--position-bias-rw-std-m-sqrt-s", type=float, default=0.0)
     parser.add_argument("--velocity-bias-rw-std-m-s-sqrt-s", type=float, default=0.0)
     parser.add_argument(
@@ -427,7 +449,9 @@ def main() -> int:
     parameter_context = nullcontext() if args.skip_params else ParamGuard(parameters=parameters)
     with parameter_context:
         rclpy.init()
-        node = CppHoverSupervisor(args.output_directory, args.trajectory, args.radius, args.speed)
+        node = CppHoverSupervisor(
+            args.output_directory, args.trajectory, args.radius, args.speed, args.step_dwell
+        )
         try:
             while rclpy.ok() and not node.finished:
                 rclpy.spin_once(node, timeout_sec=0.1)

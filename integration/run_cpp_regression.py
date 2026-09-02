@@ -258,6 +258,8 @@ def main() -> int:
                         "--trajectory", "point_1m" if case.name == "point_1m" else case.name,
                         "--output-directory", str(case_dir), "--skip-params",
                     ]
+                    if case.name == "point_1m":
+                        supervisor_cmd += ["--step-dwell", "2.0", "--radius", "1.0"]
                     if case.name in ("circle", "figure8"):
                         supervisor_cmd += ["--radius", "2.0", "--speed", "1.0"]
                     result, _ = _run_supervisor(
