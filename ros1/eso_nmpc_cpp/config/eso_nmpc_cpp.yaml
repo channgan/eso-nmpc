@@ -1,0 +1,51 @@
+eso_nmpc_cpp:
+  mass: 2.0
+  gravity: 9.80665
+  rate_tau: 0.15
+  # Must match config/nmpc.yaml and the generated acados solver.
+  sample_time: 0.01
+  horizon_steps: 30
+  reference_timeout: 0.20
+  # Hardware-fault recovery default: compute only until the propulsion system is re-qualified.
+  control_enabled_at_start: false
+  shadow_mode: true
+  # NMPC is odometry-event-driven: request ID 31/105/32 at 100 Hz after FCU connection.
+  configure_mavlink_rates: true
+  mavlink_rate_hz: 100.0
+  auto_manage_flight: false
+  prestream_s: 1.5
+  service_timeout_s: 8.0
+  state_timeout_s: 1.0
+  offboard_mode: OFFBOARD
+  auto_land_after_s: 0.0
+  eso_enabled: true
+  eso_activation_delay: 3.0
+  eso_bandwidth: 3.0
+  eso_clamp: 1.0
+  eso_innovation_limit: 0.5
+  rc_aux_channel: 6       # 1-based RCIn channel used to enable manual RC-NMPC
+  rc_aux_enable_threshold: 0.5
+  rc_timeout_s: 0.5
+  rc_deadzone: 0.08
+  rc_max_horizontal_speed: 2.0
+  rc_max_vertical_speed_up: 3.0
+  rc_max_vertical_speed_down: 1.5
+  rc_max_horizontal_acceleration: 2.0
+  rc_max_vertical_acceleration_up: 4.0
+  rc_max_vertical_acceleration_down: 3.0
+  rc_max_yaw_rate: 0.5
+  rc_max_yaw_acceleration: 1.0
+  rc_hold_max_horizontal_speed: 0.8
+  rc_hold_max_vertical_speed: 0.6
+  rc_max_horizontal_position_lead: 0.8
+  rc_max_vertical_position_lead: 0.4
+  thrust_min: 3.3278
+  thrust_max: 27.7314
+  hover_throttle: 0.3653  # 500 g/motor, interpolated from the measured thrust table
+  throttle_min: 0.12
+  throttle_max: 1.0
+  body_rate_max_x: 1.0
+  body_rate_max_y: 1.0
+  body_rate_max_z: 1.0
+  flight_log_root: /home/ljt/nmpc_log
+  timing_log_path: ""

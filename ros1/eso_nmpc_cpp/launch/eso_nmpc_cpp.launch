@@ -1,0 +1,10 @@
+<launch>
+  <arg name="auto_manage_flight" default="false" />
+  <arg name="rc_aux_channel" default="6" />
+  <arg name="shadow_mode" default="true" />
+  <rosparam command="load" file="$(find eso_nmpc_cpp)/config/eso_nmpc_cpp.yaml" />
+  <param name="/eso_nmpc_cpp/auto_manage_flight" value="$(arg auto_manage_flight)" />
+  <param name="/eso_nmpc_cpp/rc_aux_channel" value="$(arg rc_aux_channel)" />
+  <param name="/eso_nmpc_cpp/shadow_mode" value="$(arg shadow_mode)" />
+  <node pkg="eso_nmpc_cpp" type="eso_nmpc_cpp" name="eso_nmpc_cpp" output="screen" />
+</launch>

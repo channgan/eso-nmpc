@@ -2,6 +2,16 @@ eso_nmpc_ros1:
   config_path: "$(find eso_nmpc_ros1)/../../config/nmpc.yaml"
   altitude: 1.0
   prestream_s: 1.5
-  flight_duration_s: 12.0
+  trajectory: "hover"
+  radius: 0.5
+  speed: 0.25
+  ascent_s: 4.0
+  hold_s: 8.0
+  transition_s: 2.0
+  descent_s: 4.0
+  settle_s: 1.0
+  state_timeout_s: 1.0
+  service_timeout_s: 8.0
   offboard_mode: "OFFBOARD"
+  log_root: "/home/ljt/nmpc_log"
   timing_log: ""

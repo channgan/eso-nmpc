@@ -113,7 +113,7 @@ body_rate_sp = command.body_rate
 
 ## PX4 x500 SITL 轨迹验收
 
-`config/nmpc.yaml` 已按 Gazebo x500 的 `2.0643076923 kg` 总质量配置。直接发布
+`config/nmpc.yaml` 已按真实四旋翼的 `2.0 kg` 总质量配置。直接发布
 `VehicleRatesSetpoint` 时的实测悬停输入为 `0.73`，归一化范围为 `0.12～1.00`；
 它不同于 PX4 位置控制器使用的 `MPC_THR_HOVER=0.60`。
 启动 PX4、MicroXRCEAgent 并 source ROS 2 工作区后运行。若 WSL/Gazebo

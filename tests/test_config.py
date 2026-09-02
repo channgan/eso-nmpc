@@ -8,10 +8,10 @@ from nmpc.config import load_config
 
 def test_default_config_is_consistent() -> None:
     config = load_config()
-    assert config.controller.sample_time == pytest.approx(0.02)
-    assert config.controller.control_period == pytest.approx(0.02)
+    assert config.controller.sample_time == pytest.approx(0.01)
+    assert config.controller.control_period == pytest.approx(0.01)
     assert config.controller.horizon_steps == 30
-    assert config.hover_thrust == pytest.approx(2.0643076923 * 9.80665)
+    assert config.hover_thrust == pytest.approx(2.0 * 9.80665)
     assert config.limits.thrust_min < config.hover_thrust < config.limits.thrust_max
     assert config.limits.horizontal_speed_max == pytest.approx(2.0)
     assert config.limits.vertical_speed_max_up == pytest.approx(3.0)
@@ -56,19 +56,6 @@ def test_config_arrays_are_not_aliased_by_yaml() -> None:
     assert second.cost_scales.position_error_m[0] == 0.1
 
 
-def test_x500_thrust_limits_match_px4_throttle() -> None:
+def test_real_airframe_thrust_limits_contain_hover() -> None:
     config = load_config()
-    hover = config.hover_thrust
-
-    np.testing.assert_allclose(
-        config.limits.thrust_min / hover,
-        config.px4.throttle_min / config.px4.hover_throttle,
-        rtol=0.0,
-        atol=1.0e-5,
-    )
-    np.testing.assert_allclose(
-        config.limits.thrust_max / hover,
-        config.px4.throttle_max / config.px4.hover_throttle,
-        rtol=0.0,
-        atol=1.0e-5,
-    )
+    assert config.limits.thrust_min < config.hover_thrust < config.limits.thrust_max

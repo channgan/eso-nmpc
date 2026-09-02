@@ -1,6 +1,6 @@
 # ESO-NMPC ROS 1 适配层
 
-这是 `ros1` 分支的第一阶段适配：保留 `nmpc/` 数学核心，新增 ROS 1
+这是 ROS 1 Noetic 适配：保留 `nmpc/` 数学核心，新增 ROS 1
 catkin 包，通过 MAVROS 接入 PX4。ROS 1 不直接依赖 ROS 2 的 `rclpy`、
 `px4_msgs` 或 DDS 话题。
 
@@ -14,7 +14,9 @@ catkin 包，通过 MAVROS 接入 PX4。ROS 1 不直接依赖 ROS 2 的 `rclpy`�
 | Offboard 模式 | `/mavros/set_mode` |
 | 解锁/上锁 | `/mavros/cmd/arming` |
 
-MAVROS 的局部位姿是 ENU/FLU，NMPC 内部仍使用 PX4 NED/FRD。转换集中在
+MAVROS 的局部位姿是 ENU/FLU，且 `Odometry.twist` 位于子坐标系（机体系
+FLU）；NMPC 内部仍使用 PX4 NED/FRD。位置、机体系速度、角速度和姿态的
+完整转换集中在
 `src/eso_nmpc_ros1/frames.py`，避免把坐标转换散落在控制器中。
 
 ## 构建
@@ -65,6 +67,37 @@ roslaunch eso_nmpc_ros1 eso_nmpc.launch \
   timing_log:=/data/flight_logs/ros1_nmpc_timing.csv
 ```
 
-该第一阶段节点验证的是 ROS 1/MAVROS 的 hover 闭环和 `rx_to_pub` 记录；
-完整四项回归、ESO 扰动矩阵和 C++ ROS 1 节点将在接口确认后继续迁移，
-不会把 ROS 1 的结果混入 `sitl_regression_cpp`。
+如果不指定 `timing_log`，节点会自动在 `/home/ljt/nmpc_log/YYYYMMDD_HHMMSS/`
+下写入 `nmpc_timing.csv`。日志根目录可通过 `log_root:=...` 修改；显式
+`timing_log` 的优先级高于自动路径。
+
+节点支持与基线一致的四种预设轨迹：`hover`、`step`、`circle`、`figure8`。
+例如：
+
+```bash
+roslaunch eso_nmpc_ros1 eso_nmpc.launch trajectory:=circle \
+  timing_log:=/data/flight_logs/ros1_circle/nmpc_timing.csv
+```
+
+每个新的 MAVROS 里程计样本只触发一次求解；CSV 同时记录 `rx_to_pub_ms`、
+`solve_ms`、NED 位置/参考和跟踪误差。里程计超时、求解失败、进入 Offboard
+超时或解锁超时都会停止任务；飞行中求解失败会请求 `AUTO.LAND`。
+
+本目录保留 Python 适配层，便于接口回归和坐标转换单测。正式部署的原生 ROS1
+C++ 节点位于同级目录 `ros1/eso_nmpc_cpp`，使用 `roscpp + MAVROS + acados
+C solver`，日志和完整轨迹消息接口保持一致。ESO 尚未接入该 ROS1 C++ 热路径；
+先完成无扰动 hover 和四项轨迹验证，再接入观测器。
+
+## 隔离开发工作区
+
+迁移开发建议使用独立 worktree 和保留 ROS 系统包的虚拟环境：
+
+```bash
+git worktree add ../eso_nmpc_ros1_migration -b ros1-migration ros1
+cd ../eso_nmpc_ros1_migration
+python3 -m venv --system-site-packages .venv
+source /opt/ros/noetic/setup.bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest
+```

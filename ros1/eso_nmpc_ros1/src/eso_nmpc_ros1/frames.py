@@ -41,6 +41,14 @@ def quaternion_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     ])
 
 
+def rotate_vector(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """Rotate a three-vector with a scalar-first quaternion."""
+    q = normalize_quaternion(quaternion)
+    pure = np.r_[0.0, _vector(vector, "vector")]
+    conjugate = q * np.array([1.0, -1.0, -1.0, -1.0])
+    return quaternion_multiply(quaternion_multiply(q, pure), conjugate)[1:]
+
+
 def normalize_quaternion(value: np.ndarray) -> np.ndarray:
     quaternion = np.asarray(value, dtype=float)
     if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
@@ -52,21 +60,25 @@ def normalize_quaternion(value: np.ndarray) -> np.ndarray:
 
 
 def enu_quaternion_to_ned(value: np.ndarray) -> np.ndarray:
-    """Convert a MAVROS body-to-ENU quaternion to body-to-NED."""
+    """Convert a MAVROS FLU-to-ENU quaternion to FRD-to-NED."""
     # ENU -> NED is a 180 degree rotation around the [1, 1, 0] axis.
     enu_to_ned_quaternion = np.array([0.0, np.sqrt(0.5), np.sqrt(0.5), 0.0])
-    return normalize_quaternion(
-        quaternion_multiply(enu_to_ned_quaternion, normalize_quaternion(value))
-    )
+    flu_from_frd_quaternion = np.array([0.0, 1.0, 0.0, 0.0])
+    return normalize_quaternion(quaternion_multiply(
+        quaternion_multiply(enu_to_ned_quaternion, normalize_quaternion(value)),
+        flu_from_frd_quaternion,
+    ))
 
 
 def mavros_odometry_to_state(
     position_enu: np.ndarray,
-    velocity_enu: np.ndarray,
+    linear_velocity_flu: np.ndarray,
     orientation_wxyz_enu: np.ndarray,
     angular_velocity_flu: np.ndarray,
 ) -> np.ndarray:
     """Build the 13-state NED/FRD vector consumed by ``AcadosNmpc``."""
+    orientation_enu = normalize_quaternion(orientation_wxyz_enu)
+    velocity_enu = rotate_vector(orientation_enu, linear_velocity_flu)
     return np.r_[
         enu_to_ned(position_enu),
         enu_to_ned(velocity_enu),
