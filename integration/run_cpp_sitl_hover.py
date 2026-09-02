@@ -6,8 +6,14 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
+from contextlib import nullcontext
 from pathlib import Path
 from time import monotonic
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import rclpy
@@ -22,7 +28,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 
-from integration.mavlink_params import ParamGuard
+from integration.mavlink_params import DEFAULT_PARAMETERS, GuardedParameter, ParamGuard
 from nmpc.trajectory import quintic_segment, smooth_profile
 
 
@@ -393,13 +399,33 @@ def main() -> int:
     parser.add_argument(
         "--output-directory",
         type=Path,
-        default=Path("background/baseline_runs/cpp_hover_smoke"),
+        default=Path("background/sitl_smoke_cpp/cpp_hover_smoke"),
     )
     parser.add_argument("--trajectory", choices=("hover", "point_1m", "circle", "figure8"), default="hover")
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--speed", type=float, default=1.0)
+    parser.add_argument("--position-bias-rw-std-m-sqrt-s", type=float, default=0.0)
+    parser.add_argument("--velocity-bias-rw-std-m-s-sqrt-s", type=float, default=0.0)
+    parser.add_argument(
+        "--skip-params",
+        action="store_true",
+        help="不在本进程内修改 PX4 参数；由外层回归编排器统一管理参数。",
+    )
     args = parser.parse_args()
-    with ParamGuard():
+    parameters = DEFAULT_PARAMETERS + (
+        GuardedParameter(
+            "SIM_GZ_ODOM_RW_P",
+            args.position_bias_rw_std_m_sqrt_s,
+            "external odometry position random walk",
+        ),
+        GuardedParameter(
+            "SIM_GZ_ODOM_RW_V",
+            args.velocity_bias_rw_std_m_s_sqrt_s,
+            "external odometry velocity random walk",
+        ),
+    )
+    parameter_context = nullcontext() if args.skip_params else ParamGuard(parameters=parameters)
+    with parameter_context:
         rclpy.init()
         node = CppHoverSupervisor(args.output_directory, args.trajectory, args.radius, args.speed)
         try:
