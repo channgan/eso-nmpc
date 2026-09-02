@@ -9,8 +9,16 @@ from typing import Any
 import numpy as np
 
 from ..config import NmpcConfig
-from ..model.quadrotor import ACADOS_NP, NP, NU, NX, QuadrotorModel, normalize_quaternion
+from ..model.quadrotor import (
+    ACADOS_NP,
+    NP,
+    NU,
+    NX,
+    QuadrotorModel,
+    normalize_quaternion,
+)
 from ..reference import align_reference_quaternions
+from ..reference import align_quaternion_sequence
 from ..types import Control, Reference
 
 
@@ -62,18 +70,17 @@ def build_ocp(config: NmpcConfig) -> Any:
     )
     stage_output = ca.vertcat(x[:6], rotation_vector, u)
     terminal_output = ca.vertcat(x[:6], rotation_vector)
-    state_weights = np.r_[
-        config.weights.position,
-        config.weights.velocity,
-        config.weights.attitude,
-    ]
+    # Each physical residual is normalized by its configured engineering
+    # scale.  In physical coordinates this is W_i = weight_factor / scale_i^2;
+    # no additional state/control priority multipliers are applied.
+    state_weights = config.cost_scales.state_weights
     # R penalizes the feedback correction around inverse-dynamics feed-forward:
     # (u - u_ff)' R (u - u_ff). It does not penalize absolute thrust/rate.
-    control_deviation_weights = np.r_[config.weights.thrust, config.weights.body_rate]
+    control_deviation_weights = config.cost_scales.control_weights
     ocp.cost.cost_type = "NONLINEAR_LS"
     ocp.cost.cost_type_e = "NONLINEAR_LS"
     ocp.cost.W = np.diag(np.r_[state_weights, control_deviation_weights])
-    ocp.cost.W_e = config.weights.terminal_factor * np.diag(state_weights)
+    ocp.cost.W_e = np.diag(state_weights)
     ocp.model.cost_y_expr = stage_output
     ocp.model.cost_y_expr_e = terminal_output
     hover = np.array([config.hover_thrust, 0.0, 0.0, 0.0])
@@ -176,7 +183,7 @@ def load_or_generate_solver(config: NmpcConfig) -> Any:
 
 
 class AcadosNmpc:
-    """Stateful SQP-RTI controller with warm-start retained by acados."""
+    """Stateful SQP-RTI controller with shifted primal/dual warm start."""
 
     def __init__(self, config: NmpcConfig, solver: Any | None = None) -> None:
         self.config = config
@@ -185,6 +192,17 @@ class AcadosNmpc:
         self.last_status = 0
         self._last_states: np.ndarray | None = None
         self._last_controls: np.ndarray | None = None
+        self._last_dynamics_multipliers: np.ndarray | None = None
+        self.warm_start_used = False
+        self.last_timing: dict[str, float] = {}
+        self.last_solver_stats: dict[str, float] = {}
+
+    def reset_warm_start(self) -> None:
+        """Discard the previous SQP-RTI iterate before a discontinuity."""
+        self._last_states = None
+        self._last_controls = None
+        self._last_dynamics_multipliers = None
+        self.warm_start_used = False
 
     def solve(
         self,
@@ -192,6 +210,7 @@ class AcadosNmpc:
         reference: Reference,
         disturbance: np.ndarray | None = None,
     ) -> Control:
+        wrapper_started = perf_counter()
         state = np.asarray(state, dtype=float).copy()
         disturbance = np.zeros(NP) if disturbance is None else np.asarray(disturbance, dtype=float)
         if state.shape != (NX,):
@@ -204,61 +223,149 @@ class AcadosNmpc:
         n = self.config.controller.horizon_steps
         reference.validate(n)
         reference = align_reference_quaternions(reference, state[6:10])
+        input_validation_finished = perf_counter()
 
-        # SQP-RTI needs a meaningful linearization trajectory.  Linearize
-        # around the reference trajectory itself rather than continuing the
-        # previous solution: with a single QP iteration, a shifted previous
-        # plan carries its (already rotated) quaternion states into the new
-        # linearization, and the QP then commands large rates to correct its
-        # own guess's divergence -- sustaining an attitude limit cycle against
-        # the ~0.2 s PX4 rate-loop delay.  Seeding from the reference keeps
-        # every stage's linearized error small, so u0 stays proportional to
-        # the true stage-0 error.
+        # Standard receding-horizon initialization: shift the previous optimal
+        # state, control, and dynamics-multiplier trajectories forward by one
+        # shooting interval, and repeat their terminal values.  The measured
+        # state below always replaces x[0].  A cold start uses the current
+        # reference and zero multipliers.
         state_guess = reference.states.copy()
         control_guess = reference.feedforward_controls.copy()
+        dynamics_multiplier_guess = np.zeros((n, NX))
+        self.warm_start_used = False
+        if (
+            self.config.controller.warm_start
+            and self._last_states is not None
+            and self._last_controls is not None
+            and self._last_dynamics_multipliers is not None
+            and self._last_states.shape == (n + 1, NX)
+            and self._last_controls.shape == (n, NU)
+            and self._last_dynamics_multipliers.shape == (n, NX)
+        ):
+            state_guess = np.vstack((self._last_states[1:], self._last_states[-1]))
+            control_guess = np.vstack((self._last_controls[1:], self._last_controls[-1]))
+            dynamics_multiplier_guess = np.vstack(
+                (self._last_dynamics_multipliers[1:], self._last_dynamics_multipliers[-1])
+            )
+
+            # Quaternion signs are not physical states.  Keep the shifted
+            # trajectory normalized and in one hemisphere before acados
+            # linearizes around it.
+            state_guess[:, 6:10] = align_quaternion_sequence(
+                state_guess[:, 6:10], state[6:10]
+            )
+
+            control_guess[:, 0] = np.clip(
+                control_guess[:, 0], self.config.limits.thrust_min, self.config.limits.thrust_max
+            )
+            control_guess[:, 1:4] = np.clip(
+                control_guess[:, 1:4],
+                -self.config.limits.body_rate_max,
+                self.config.limits.body_rate_max,
+            )
+            self.warm_start_used = True
+        warm_start_finished = perf_counter()
         state_guess[0] = state
         for stage in range(n):
             self._solver.set(stage, "x", state_guess[stage])
             self._solver.set(stage, "u", control_guess[stage])
+            self._solver.set(stage, "pi", dynamics_multiplier_guess[stage])
         self._solver.set(n, "x", state_guess[n])
+        initial_guess_finished = perf_counter()
 
+        bounds_started = perf_counter()
         self._solver.set(0, "lbx", state)
         self._solver.set(0, "ubx", state)
+        bounds_finished = perf_counter()
+        parameters_started = perf_counter()
         for stage in range(n):
             self._solver.set(
                 stage, "p", np.r_[disturbance, reference.states[stage, 6:10]]
             )
+        self._solver.set(n, "p", np.r_[disturbance, reference.states[n, 6:10]])
+        parameters_finished = perf_counter()
+        yref_started = perf_counter()
+        for stage in range(n):
             self._solver.set(
                 stage,
                 "yref",
                 np.r_[reference.states[stage, :6], np.zeros(3), reference.feedforward_controls[stage]],
             )
-        self._solver.set(n, "p", np.r_[disturbance, reference.states[n, 6:10]])
         self._solver.set(n, "yref", np.r_[reference.states[n, :6], np.zeros(3)])
+        yref_finished = perf_counter()
+        set_finished = perf_counter()
 
-        started = perf_counter()
+        started = set_finished
         self.last_status = int(self._solver.solve())
-        wall_solve_time = perf_counter() - started
+        solve_finished = perf_counter()
+        wall_solve_time = solve_finished - started
         self.last_solve_time = wall_solve_time
+        stats_started = perf_counter()
+        self.last_solver_stats = {}
         if hasattr(self._solver, "get_stats"):
             # Some acados builds occasionally expose a negative or otherwise
             # invalid time_tot value.  A duration cannot be negative, so retain
             # the monotonic wall-clock measurement in that case instead of
             # contaminating benchmark percentiles.
-            try:
-                reported_solve_time = float(self._solver.get_stats("time_tot"))
-            except (TypeError, ValueError):
-                reported_solve_time = float("nan")
-            if np.isfinite(reported_solve_time) and reported_solve_time >= 0.0:
-                self.last_solve_time = reported_solve_time
+            reported_solve_time = float("nan")
+            for field in (
+                "time_tot",
+                "time_qp",
+                "time_qp_xcond",
+                "time_qp_solver_call",
+                "time_qpscaling",
+                "time_lin",
+                "time_sim",
+                "time_reg",
+                "time_preparation",
+            ):
+                try:
+                    value = float(self._solver.get_stats(field))
+                except (AssertionError, AttributeError, KeyError, TypeError, ValueError):
+                    value = float("nan")
+                if np.isfinite(value) and value >= 0.0:
+                    self.last_solver_stats[field] = value
+                if field == "time_tot":
+                    reported_solve_time = value
+            # Keep the host monotonic measurement as the authoritative pure
+            # solve duration.  Native ``time_tot`` is retained in
+            # ``last_solver_stats`` for diagnosis; some builds report it in a
+            # different unit or occasionally return an implausible outlier.
+        stats_finished = perf_counter()
         if self.last_status != 0:
+            # Do not carry a failed primal guess into the next SQP-RTI call.
+            self._last_states = None
+            self._last_controls = None
+            self._last_dynamics_multipliers = None
             raise RuntimeError(f"acados solve failed with status {self.last_status}")
+        extraction_started = perf_counter()
         self._last_states = np.vstack(
             [np.asarray(self._solver.get(i, "x"), dtype=float).reshape(NX) for i in range(n + 1)]
         )
         self._last_controls = np.vstack(
             [np.asarray(self._solver.get(i, "u"), dtype=float).reshape(NU) for i in range(n)]
         )
+        self._last_dynamics_multipliers = np.vstack(
+            [np.asarray(self._solver.get(i, "pi"), dtype=float).reshape(NX) for i in range(n)]
+        )
+        extraction_finished = perf_counter()
+        self.last_timing = {
+            "wrapper_total_ms": 1.0e3 * (extraction_finished - wrapper_started),
+            "input_validation_ms": 1.0e3 * (input_validation_finished - wrapper_started),
+            "warm_start_initialization_ms": 1.0e3 * (warm_start_finished - input_validation_finished),
+            "initial_guess_set_ms": 1.0e3 * (initial_guess_finished - warm_start_finished),
+            "parameters_yref_bounds_set_ms": 1.0e3 * (set_finished - initial_guess_finished),
+            "state_bounds_set_ms": 1.0e3 * (bounds_finished - bounds_started),
+            "stage_parameters_set_ms": 1.0e3 * (parameters_finished - parameters_started),
+            "stage_yref_set_ms": 1.0e3 * (yref_finished - yref_started),
+            "pure_solver_wall_ms": 1.0e3 * (solve_finished - started),
+            "solver_stats_query_ms": 1.0e3 * (stats_finished - solve_finished),
+            "trajectory_extraction_ms": 1.0e3 * (extraction_finished - extraction_started),
+            "t_set_steady_s": set_finished,
+            "t_solve_0_steady_s": started,
+            "t_solve_1_steady_s": solve_finished,
+        }
         return Control.from_array(self._last_controls[0])
 
     def predicted_states(self) -> np.ndarray:

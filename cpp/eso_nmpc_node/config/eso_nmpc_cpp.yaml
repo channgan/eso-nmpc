@@ -1,0 +1,52 @@
+/eso_nmpc_cpp:
+  ros__parameters:
+    mass: 2.0643076923
+    gravity: 9.80665
+    rate_tau: 0.15
+    sample_time: 0.02
+    horizon_steps: 30
+    reference_timeout: 0.20
+    # RC-NMPC is selected only when Offboard is active and this AUX channel
+    # is high.  The RC reference is generated locally in this node.
+    rc_timeout: 0.50
+    rc_deadzone: 0.08
+    # Set to the AUX channel selected in the airframe configuration.  0
+    # disables RC-NMPC selection until explicitly configured.
+    rc_aux_channel: 0
+    rc_aux_enable_threshold: 0.50
+    rc_max_horizontal_speed: 2.0
+    rc_max_vertical_speed_up: 3.0
+    rc_max_vertical_speed_down: 1.5
+    rc_max_horizontal_acceleration: 2.0
+    rc_max_vertical_acceleration_up: 4.0
+    rc_max_vertical_acceleration_down: 3.0
+    rc_max_yaw_rate: 0.5
+    rc_max_yaw_acceleration: 1.0
+    # Match PX4 MPC_HOLD_MAX_XY / MPC_HOLD_MAX_Z lock thresholds.
+    rc_hold_max_horizontal_speed: 0.8
+    rc_hold_max_vertical_speed: 0.6
+    rc_max_horizontal_position_lead: 0.8
+    rc_max_vertical_position_lead: 0.4
+    thrust_min: 3.3278
+    thrust_max: 27.7314
+    body_rate_max_x: 1.0
+    body_rate_max_y: 1.0
+    body_rate_max_z: 1.0
+    hover_throttle: 0.73
+    throttle_min: 0.12
+    throttle_max: 1.0
+    eso_enabled: true
+    eso_activation_delay: 3.0
+    eso_bandwidth: 3.0
+    eso_clamp: 1.0
+    eso_innovation_limit: 0.5
+    warm_start: true
+    control_enabled_at_start: false
+    # Continuous asynchronous flight logging.  Each node start creates
+    # nmpc/logs/YYYYMMDD_HHMMSS_mmm/ below this root.  Set an absolute root on the
+    # companion computer (for example /data/flight_logs) before a real flight.
+    flight_log_root: ""
+    flight_log_path: ""
+    timing_log_path: ""
+    flight_log_buffer_size: 4096
+    flight_log_flush_period_ms: 250

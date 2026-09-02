@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import perf_counter
 
 import numpy as np
 
@@ -11,8 +12,9 @@ from .config import ManualControlConfig
 from .model.quadrotor import align_quaternion
 from .reference import (
     attach_feedforward_rate_states,
-    average_body_rate,
-    inverse_dynamics_attitude_and_thrust,
+    average_body_rate_batch,
+    align_quaternion_sequence,
+    inverse_dynamics_attitude_and_thrust_batch,
 )
 from .trajectory import quintic_segment, smooth_profile
 from .types import Reference
@@ -91,9 +93,9 @@ class KinematicTrajectory:
             velocity[:, 2] > vertical_speed_max_down + tolerance
         ):
             raise ValueError("trajectory exceeds vertical speed limit")
-        # PX4's PositionSmoothing enforces MPC_ACC_HOR per axis, so the envelope
-        # contract is per-axis here (a 3D norm of the same value would be stricter
-        # than the PX4 smoother itself and reject its own output on turns).
+        # The deployment envelope is defined per horizontal axis from the PX4
+        # vehicle limits; a 3D norm would be stricter on turns than the stated
+        # per-axis contract.
         if np.any(
             np.abs(acceleration[:, :2]) > horizontal_acceleration_max + tolerance
         ):
@@ -102,9 +104,10 @@ class KinematicTrajectory:
             acceleration[:, 2] > vertical_acceleration_max_down + tolerance
         ):
             raise ValueError("trajectory exceeds vertical acceleration limit")
-        # Jerk is deliberately not constrained here. PX4's trajectory
-        # generator owns jerk limiting; this branch tests NMPC tracking of the
-        # resulting kinematic preview without duplicating that constraint.
+        # Jerk is deliberately not used as an additional NMPC constraint.  The
+        # producer of a direct trajectory is responsible for time-parameterizing
+        # it smoothly; the complete jerk samples are still carried in the
+        # interface for logging and future constraint support.
 
 
 @dataclass(frozen=True)
@@ -181,6 +184,85 @@ class PresetTrajectory:
         else:
             motion = p.ascent + 2.0 * p.transition + self.circle_duration + p.descent
         return motion + p.settle
+
+    @property
+    def direct_duration(self) -> float:
+        """Duration of the complete, smooth point-sequence trajectory.
+
+        The legacy ``sample`` method represents the step test as held points.
+        The direct NMPC interface instead needs a continuous point-to-point
+        trajectory, so each move uses a quintic transition followed by the
+        configured dwell time.
+        """
+        p = self.parameters
+        if p.mode != "step":
+            return self.duration
+        sequence = p.hold + (len(self.step_positions) - 1) * (p.transition + p.hold)
+        return p.ascent + sequence + p.descent + p.settle
+
+    def sample_direct(self, time_s: float) -> KinematicSetpoint:
+        """Sample the trajectory intended for the direct NMPC interface."""
+        p = self.parameters
+        if p.mode != "step":
+            return self.sample(time_s)
+        if time_s < p.ascent:
+            return self.sample(time_s)
+
+        sequence_time = time_s - p.ascent
+        positions = self.step_positions
+        sequence_duration = p.hold + (len(positions) - 1) * (p.transition + p.hold)
+        if sequence_time < sequence_duration:
+            if sequence_time < p.hold:
+                return KinematicSetpoint(
+                    positions[0], np.zeros(3), np.zeros(3), self.yaw, "step_center_0"
+                )
+            move_time = sequence_time - p.hold
+            block = p.transition + p.hold
+            index = min(
+                int(move_time // block) + 1,
+                len(positions) - 1,
+            )
+            local_time = move_time - (index - 1) * block
+            if local_time < p.transition:
+                position, velocity, acceleration = quintic_segment(
+                    local_time,
+                    p.transition,
+                    positions[index - 1],
+                    positions[index],
+                )
+                labels = (
+                    "north", "center_1", "south", "center_2",
+                    "east", "center_3", "west", "center_4",
+                )
+                return KinematicSetpoint(
+                    position,
+                    velocity,
+                    acceleration,
+                    self.yaw,
+                    "step_" + labels[index - 1],
+                )
+            labels = (
+                "north", "center_1", "south", "center_2",
+                "east", "center_3", "west", "center_4",
+            )
+            return KinematicSetpoint(
+                positions[index], np.zeros(3), np.zeros(3), self.yaw,
+                "step_" + labels[index - 1],
+            )
+
+        descent_time = sequence_time - sequence_duration
+        fraction, velocity_fraction, acceleration_fraction = smooth_profile(
+            descent_time, p.descent
+        )
+        hover = self.start_position + np.array([0.0, 0.0, -p.altitude])
+        delta = self.start_position - hover
+        return KinematicSetpoint(
+            hover + delta * fraction,
+            delta * velocity_fraction,
+            delta * acceleration_fraction,
+            self.yaw,
+            "descent",
+        )
 
     def sample(self, time_s: float) -> KinematicSetpoint:
         p = self.parameters
@@ -466,6 +548,7 @@ def build_reference_horizon(
     body_rate_max: np.ndarray,
     quaternion_anchor: np.ndarray,
     disturbance: np.ndarray | None = None,
+    timing: dict[str, float] | None = None,
 ) -> Reference:
     """Build state references and inverse-dynamics feed-forward controls."""
     disturbance = (
@@ -476,28 +559,45 @@ def build_reference_horizon(
     states = np.empty((horizon_steps + 1, 10))
     thrust = np.empty(horizon_steps + 1)
     previous_quaternion = np.asarray(quaternion_anchor, dtype=float)
+    sample_time_accum = 0.0
+    setpoints: list[KinematicSetpoint] = []
+    sample_started_total = perf_counter()
     for stage in range(horizon_steps + 1):
-        setpoint = sample(start_time + stage * sample_time)
-        quaternion, thrust[stage] = inverse_dynamics_attitude_and_thrust(
-            setpoint.acceleration,
-            yaw=setpoint.yaw,
-            mass=mass,
-            gravity=gravity,
-            disturbance=disturbance,
-        )
-        quaternion = align_quaternion(quaternion, previous_quaternion)
+        setpoints.append(sample(start_time + stage * sample_time))
+    sample_finished_total = perf_counter()
+    sample_time_accum = sample_finished_total - sample_started_total
+
+    inverse_started_total = perf_counter()
+    accelerations = np.asarray([item.acceleration for item in setpoints], dtype=float)
+    yaws = np.asarray([item.yaw for item in setpoints], dtype=float)
+    quaternions, thrust = inverse_dynamics_attitude_and_thrust_batch(
+        accelerations,
+        yaws,
+        mass=mass,
+        gravity=gravity,
+        disturbance=disturbance,
+    )
+    inverse_finished_total = perf_counter()
+    inverse_dynamics_time_accum = inverse_finished_total - inverse_started_total
+    quaternion_alignment_time_accum = 0.0
+    for stage, setpoint in enumerate(setpoints):
+        alignment_started = perf_counter()
+        quaternion = align_quaternion(quaternions[stage], previous_quaternion)
+        quaternion_alignment_time_accum += perf_counter() - alignment_started
         states[stage] = np.r_[setpoint.position, setpoint.velocity, quaternion]
         previous_quaternion = quaternion
 
     feedforward_controls = np.empty((horizon_steps, 4))
     feedforward_controls[:, 0] = thrust[:-1]
-    for stage in range(horizon_steps):
-        # Jerk is intentionally not an NMPC input on this test branch. PX4's
-        # PositionSmoothing already uses jerk to construct the kinematic
-        # preview; NMPC tracks the resulting position/velocity/acceleration.
-        feedforward_controls[stage, 1:4] = average_body_rate(
-            states[stage, 6:10], states[stage + 1, 6:10], sample_time
-        )
+    # Jerk is intentionally not an NMPC input on this branch.  The direct
+    # producer has already time-parameterized the preview smoothly; NMPC
+    # tracks the supplied position/velocity/acceleration samples.
+    body_rate_started = perf_counter()
+    feedforward_controls[:, 1:4] = average_body_rate_batch(
+        states[:-1, 6:10], states[1:, 6:10], sample_time
+    )
+    body_rate_finished = perf_counter()
+    limits_started = perf_counter()
     tolerance = 1.0e-9
     if np.any(feedforward_controls[:, 0] < thrust_min - tolerance) or np.any(
         feedforward_controls[:, 0] > thrust_max + tolerance
@@ -505,9 +605,24 @@ def build_reference_horizon(
         raise ValueError("inverse-dynamics thrust feed-forward violates NMPC limits")
     if np.any(np.abs(feedforward_controls[:, 1:4]) > body_rate_max + tolerance):
         raise ValueError("inverse-dynamics body-rate feed-forward violates NMPC limits")
-    return attach_feedforward_rate_states(
+    limits_finished = perf_counter()
+    attach_started = perf_counter()
+    reference = attach_feedforward_rate_states(
         Reference(states=states, controls=feedforward_controls)
     )
+    attach_finished = perf_counter()
+    if timing is not None:
+        timing.update(
+            {
+                "sample_eval_ms": 1.0e3 * sample_time_accum,
+                "inverse_dynamics_ms": 1.0e3 * inverse_dynamics_time_accum,
+                "quaternion_alignment_ms": 1.0e3 * quaternion_alignment_time_accum,
+                "body_rate_feedforward_ms": 1.0e3 * (body_rate_finished - body_rate_started),
+                "limits_check_ms": 1.0e3 * (limits_finished - limits_started),
+                "attach_states_ms": 1.0e3 * (attach_finished - attach_started),
+            }
+        )
+    return reference
 
 
 def build_reference_from_trajectory(
@@ -521,36 +636,74 @@ def build_reference_from_trajectory(
     body_rate_max: np.ndarray,
     quaternion_anchor: np.ndarray,
     disturbance: np.ndarray | None = None,
+    timing: dict[str, float] | None = None,
 ) -> Reference:
     """Convert a complete kinematic horizon into an NMPC reference.
 
-    This is the common boundary for both PX4-smoothed point commands and
-    already time-parameterized trajectories supplied by an external planner.
+    The upper computer supplies every point of the horizon. PX4 is not
+    involved in reference generation; it receives only the final NMPC command.
     """
+    validation_started = perf_counter()
     trajectory.validate(horizon_steps, sample_time)
+    validation_finished = perf_counter()
 
-    def sample(stage_time: float) -> KinematicSetpoint:
-        stage = int(round(stage_time / sample_time))
-        if not 0 <= stage <= horizon_steps:
-            raise ValueError("trajectory sample lies outside its NMPC horizon")
-        return KinematicSetpoint(
-            position=np.asarray(trajectory.position[stage], dtype=float),
-            velocity=np.asarray(trajectory.velocity[stage], dtype=float),
-            acceleration=np.asarray(trajectory.acceleration[stage], dtype=float),
-            yaw=float(trajectory.yaw[stage]),
-            segment="kinematic_trajectory",
-        )
-
-    return build_reference_horizon(
-        sample,
-        start_time=0.0,
-        horizon_steps=horizon_steps,
-        sample_time=sample_time,
+    # A complete trajectory already contains the whole horizon.  Do not turn
+    # it into 31 scalar ``KinematicSetpoint`` objects and then immediately
+    # unpack them again: that path dominated the direct-interface timing.
+    points = horizon_steps + 1
+    position = np.asarray(trajectory.position, dtype=float)
+    velocity = np.asarray(trajectory.velocity, dtype=float)
+    acceleration = np.asarray(trajectory.acceleration, dtype=float)
+    yaw = np.asarray(trajectory.yaw, dtype=float)
+    inverse_started = perf_counter()
+    quaternions, thrust = inverse_dynamics_attitude_and_thrust_batch(
+        acceleration,
+        yaw,
         mass=mass,
         gravity=gravity,
-        thrust_min=thrust_min,
-        thrust_max=thrust_max,
-        body_rate_max=body_rate_max,
-        quaternion_anchor=quaternion_anchor,
         disturbance=disturbance,
     )
+    inverse_finished = perf_counter()
+    alignment_started = perf_counter()
+    quaternions = align_quaternion_sequence(quaternions, quaternion_anchor)
+    alignment_finished = perf_counter()
+
+    states = np.empty((points, 10), dtype=float)
+    states[:, :3] = position
+    states[:, 3:6] = velocity
+    states[:, 6:10] = quaternions
+    controls = np.empty((horizon_steps, 4), dtype=float)
+    controls[:, 0] = thrust[:-1]
+    body_rate_started = perf_counter()
+    controls[:, 1:4] = average_body_rate_batch(
+        quaternions[:-1], quaternions[1:], sample_time
+    )
+    body_rate_finished = perf_counter()
+    limits_started = perf_counter()
+    tolerance = 1.0e-9
+    if np.any(controls[:, 0] < thrust_min - tolerance) or np.any(
+        controls[:, 0] > thrust_max + tolerance
+    ):
+        raise ValueError("inverse-dynamics thrust feed-forward violates NMPC limits")
+    if np.any(np.abs(controls[:, 1:4]) > body_rate_max + tolerance):
+        raise ValueError("inverse-dynamics body-rate feed-forward violates NMPC limits")
+    limits_finished = perf_counter()
+    reference = attach_feedforward_rate_states(
+        Reference(states=states, controls=controls)
+    )
+    if timing is not None:
+        timing.update(
+            {
+                "sample_eval_ms": 0.0,
+                "inverse_dynamics_ms": 1.0e3 * (inverse_finished - inverse_started),
+                "quaternion_alignment_ms": 1.0e3 * (alignment_finished - alignment_started),
+                "body_rate_feedforward_ms": 1.0e3 * (body_rate_finished - body_rate_started),
+                "limits_check_ms": 1.0e3 * (limits_finished - limits_started),
+                "attach_states_ms": 0.0,
+            }
+        )
+    if timing is not None:
+        timing["trajectory_validation_ms"] = 1.0e3 * (
+            validation_finished - validation_started
+        )
+    return reference

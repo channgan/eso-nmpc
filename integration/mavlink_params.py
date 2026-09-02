@@ -23,6 +23,16 @@ HEARTBEAT_TIMEOUT_S = 10.0
 PARAM_SET_TIMEOUT_S = 2.0
 PARAM_SET_RETRIES = 3
 
+# PX4 rejects a REAL32 PARAM_SET for enum/bitmask parameters even when the
+# requested numeric value is integral. Keep this list explicit because the
+# guard is intentionally small and the remaining parameters are floats.
+INTEGER_PARAMETERS = frozenset({
+    "NAV_DLL_ACT",
+    "NAV_RCL_ACT",
+    "COM_RCL_EXCEPT",
+    "COM_OBL_RC_ACT",
+})
+
 
 @dataclass(frozen=True)
 class GuardedParameter:
@@ -34,10 +44,17 @@ class GuardedParameter:
 # SIM_BAT_DRAIN > 0 drains the simulated battery during long flights and
 # eventually trips PX4 failsafes mid-case.  NAV_DLL_ACT arms datalink-loss
 # handling, which can abort the mission while the NMPC child (which talks to
-# PX4 through uXRCE-DDS, not MAVLink) is flying.
+# PX4 through uXRCE-DDS, not MAVLink) is flying.  RC loss and Offboard loss
+# are guarded separately: RC loss lands, while companion loss falls back to
+# PX4 Position mode.
 DEFAULT_PARAMETERS = (
     GuardedParameter("SIM_BAT_DRAIN", 0.0, "disable simulated battery drain"),
     GuardedParameter("NAV_DLL_ACT", 0.0, "disable datalink loss actions"),
+    GuardedParameter("COM_RC_LOSS_T", 1.0, "RC loss timeout"),
+    GuardedParameter("NAV_RCL_ACT", 3.0, "RC loss action: Land"),
+    GuardedParameter("COM_RCL_EXCEPT", 0.0, "do not ignore RC loss in Offboard"),
+    GuardedParameter("COM_OF_LOSS_T", 1.0, "Offboard loss timeout"),
+    GuardedParameter("COM_OBL_RC_ACT", 0.0, "Offboard loss action: Position mode"),
 )
 
 
@@ -175,12 +192,17 @@ class ParamGuard:
         assert self._connection is not None
         mavutil = _require_pymavlink()
         for attempt in range(PARAM_SET_RETRIES):
+            parameter_type = (
+                mavutil.mavlink.MAV_PARAM_TYPE_INT32
+                if name in INTEGER_PARAMETERS
+                else mavutil.mavlink.MAV_PARAM_TYPE_REAL32
+            )
             self._connection.mav.param_set_send(
                 self._connection.target_system,
                 self._connection.target_component,
                 name.encode("ascii"),
                 float(value),
-                mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+                parameter_type,
             )
             if self._read(name) == value:
                 return

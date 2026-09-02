@@ -221,9 +221,34 @@ class ModelValidationRecorder:
             "search_step_s": float(delay_step),
         }
 
-    def summary(self, horizons: tuple[float, ...] = (0.01, 0.1, 0.5)) -> dict[str, object]:
+    def summary(
+        self,
+        horizons: tuple[float, ...] = (0.01, 0.1, 0.5),
+        maximum_samples: int | None = 1200,
+    ) -> dict[str, object]:
         if len(self.samples) < 2:
             raise ValueError("at least two validation samples are required")
+
+        # The prediction-residual calculation integrates an RK4 model over
+        # every possible starting sample.  A high-rate odometry stream can
+        # therefore make reporting quadratic in the number of samples even
+        # though the controller itself has already finished.  Keep the raw
+        # samples for trajectory logging, but use an evenly decimated view for
+        # this offline summary.  The stride is bounded by the recorder's
+        # interval check, so a valid summary never bridges a large timestamp
+        # discontinuity silently.
+        summary_stride = 1
+        if maximum_samples is not None and maximum_samples > 1 and len(self.samples) > maximum_samples:
+            summary_stride = int(np.ceil(len(self.samples) / maximum_samples))
+            reduced = ModelValidationRecorder(self.model, self.maximum_interval)
+            reduced.samples = self.samples[::summary_stride]
+            if reduced.samples[-1] is not self.samples[-1]:
+                reduced.samples.append(self.samples[-1])
+            result = reduced.summary(horizons, maximum_samples=None)
+            result["summary_sample_stride"] = summary_stride
+            result["summary_sample_count"] = len(reduced.samples)
+            result["raw_sample_count"] = len(self.samples)
+            return result
 
         rate_errors: list[np.ndarray] = []
         acceleration_errors: list[np.ndarray] = []
@@ -270,6 +295,7 @@ class ModelValidationRecorder:
             segments[sample.segment] = segments.get(sample.segment, 0) + 1
         return {
             "sample_count": len(self.samples),
+            "summary_sample_stride": summary_stride,
             "valid_interval_count": valid_intervals,
             "rejected_interval_count": rejected_intervals,
             "segments": segments,

@@ -5,6 +5,10 @@ __pycache__/
 *.egg-info/
 generated/
 simulation_output/
+log/
+build_cpp/
+install_cpp/
+log_cpp/
 
 background/
 
@@ -17,3 +21,4 @@ install_cpp/
 log_cpp/
 ros1/eso_nmpc_ros1/build/
 ros1/eso_nmpc_ros1/devel/
+nmpc/logs/

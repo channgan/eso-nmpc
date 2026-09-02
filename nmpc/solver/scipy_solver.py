@@ -59,8 +59,10 @@ class ScipyNmpc:
         n = self.config.controller.horizon_steps
         controls = flat_controls.reshape(n, NU)
         states = self._rollout(state, controls, disturbance)
-        q = np.r_[self.config.weights.position, self.config.weights.velocity]
-        r = np.r_[self.config.weights.thrust, self.config.weights.body_rate]
+        state_weights = self.config.cost_scales.state_weights
+        q = state_weights[:6]
+        attitude_weights = state_weights[6:9]
+        r = self.config.cost_scales.control_weights
         state_error = states[:-1, :6] - reference.states[:-1, :6]
         attitude_error = np.vstack(
             [
@@ -71,19 +73,14 @@ class ScipyNmpc:
         # Feedback correction around the inverse-dynamics nominal control.
         control_error = controls - reference.feedforward_controls
         stage_cost = np.sum(state_error * state_error * q)
-        stage_cost += np.sum(attitude_error * attitude_error * self.config.weights.attitude)
+        stage_cost += np.sum(attitude_error * attitude_error * attitude_weights)
         stage_cost += np.sum(control_error * control_error * r)
         terminal_error = states[-1, :6] - reference.states[-1, :6]
         terminal_attitude_error = quaternion_attitude_error(
             states[-1, 6:10], reference.states[-1, 6:10]
         )
-        terminal_cost = self.config.weights.terminal_factor * (
-            np.sum(terminal_error * terminal_error * q)
-            + np.sum(
-                terminal_attitude_error
-                * terminal_attitude_error
-                * self.config.weights.attitude
-            )
+        terminal_cost = np.sum(terminal_error * terminal_error * q) + np.sum(
+            terminal_attitude_error * terminal_attitude_error * attitude_weights
         )
         return float(self.config.controller.sample_time * stage_cost + terminal_cost)
 

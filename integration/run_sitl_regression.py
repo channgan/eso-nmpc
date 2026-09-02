@@ -16,11 +16,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
+import numpy as np
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from integration.mavlink_params import DEFAULT_PARAMETERS, ParamGuard, ParamGuardError
+from integration.mavlink_params import (
+    DEFAULT_PARAMETERS,
+    GuardedParameter,
+    ParamGuard,
+    ParamGuardError,
+)
 
 DEFAULT_ROS_SETUP_SCRIPTS: tuple[Path, ...] = (
     Path("/opt/ros/humble/setup.bash"),
@@ -90,9 +97,9 @@ class BaselineCase:
 
 
 CASES = (
-    BaselineCase("hover", "hover", "px4-smoothed"),
+    BaselineCase("hover", "hover", "direct"),
     BaselineCase(
-        "point_1m", "step", "px4-smoothed",
+        "point_1m", "step", "direct",
         ("--radius", "1.0", "--step-dwell", "2.0"),
     ),
     BaselineCase(
@@ -210,6 +217,7 @@ def check_services(
 
 
 def _write_suite_reports(directory: Path, results: dict[str, dict[str, object]]) -> None:
+    combined_plot = _write_combined_trajectory_plot(directory, results)
     summary_path = directory / "suite_summary.json"
     summary_path.write_text(
         json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -218,14 +226,16 @@ def _write_suite_reports(directory: Path, results: dict[str, dict[str, object]])
         "# NMPC SITL baseline",
         "",
         "| Case | Interface | Result | Position RMSE (m) | Velocity RMSE (m/s) | "
-        "Attitude RMSE (rad) | Solve P99 (ms) |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "Attitude RMSE (rad) | Solve P99 (ms) | Trajectory plot |",
+        "|---|---|---:|---:|---:|---:|---:|---|",
     ]
     for name, result in results.items():
         status = "PASS" if result.get("success", False) else "FAIL"
+        trajectory_plot = result.get("trajectory_plot")
+        plot_cell = f"[PNG]({trajectory_plot})" if trajectory_plot else "-"
         lines.append(
             "| {name} | {source} | {status} | {position:.4f} | {velocity:.4f} | "
-            "{attitude:.4f} | {solve:.3f} |".format(
+            "{attitude:.4f} | {solve:.3f} | {plot} |".format(
                 name=name,
                 source=result.get("reference_source", "unknown"),
                 status=status,
@@ -233,10 +243,59 @@ def _write_suite_reports(directory: Path, results: dict[str, dict[str, object]])
                 velocity=float(result.get("velocity_rmse_m_s", float("nan"))),
                 attitude=float(result.get("attitude_rmse_rad", float("nan"))),
                 solve=float(result.get("solve_p99_ms", float("nan"))),
+                plot=plot_cell,
             )
         )
     lines.extend(("", f"Machine-readable report: `{summary_path.name}`", ""))
+    if combined_plot is not None:
+        lines.extend((f"Combined trajectory plot: [PNG]({combined_plot})", ""))
     (directory / "suite_summary.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_combined_trajectory_plot(
+    directory: Path, results: dict[str, dict[str, object]]
+) -> Path | None:
+    """Stack the per-case trajectory plots into one easy-to-scan long image."""
+    plot_paths: list[tuple[str, Path]] = []
+    for case in CASES:
+        result = results.get(case.name)
+        if result is None:
+            continue
+        value = result.get("trajectory_plot")
+        if not value:
+            continue
+        path = Path(str(value))
+        if path.is_file():
+            plot_paths.append((case.name, path))
+    if not plot_paths:
+        return None
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    try:
+        images = [(name, plt.imread(path)) for name, path in plot_paths]
+        figure, axes = plt.subplots(
+            len(images), 1, figsize=(12.0, 7.5 * len(images)), squeeze=False
+        )
+        for axis, (name, image) in zip(axes[:, 0], images):
+            axis.imshow(image)
+            axis.set_title(name, loc="left", fontsize=14, fontweight="bold")
+            axis.axis("off")
+        figure.subplots_adjust(left=0.0, right=1.0, top=0.995, bottom=0.005, hspace=0.02)
+        output = directory / "trajectory_suite_long.png"
+        figure.savefig(output, dpi=150, bbox_inches="tight", pad_inches=0.05)
+        plt.close(figure)
+        return output.resolve()
+    except Exception:
+        # Plot generation is a convenience artifact and must not fail a flight report.
+        plt.close("all")
+        return None
 
 
 def _run_case(
@@ -333,6 +392,41 @@ def main() -> int:
         help="run only selected cases (default: all four mandatory cases)",
     )
     parser.add_argument(
+        "--thrust-weight",
+        type=float,
+        help="temporary physical thrust-correction cost weight R_T for this suite",
+    )
+    parser.add_argument(
+        "--eso-bandwidth",
+        type=float,
+        help="temporary ESO bandwidth in rad/s for this suite",
+    )
+    parser.add_argument(
+        "--model-mass",
+        type=float,
+        help="temporary NMPC model mass in kg for model-mismatch tests",
+    )
+    parser.add_argument(
+        "--disable-eso", action="store_true",
+        help="disable ESO for an A/B comparison run",
+    )
+    parser.add_argument(
+        "--disable-warm-start", action="store_true",
+        help="disable shifted Acados x/u/pi initialization for an A/B comparison run",
+    )
+    parser.add_argument(
+        "--direct-callback", action="store_true",
+        help="experimental: run NMPC synchronously in the VehicleOdometry callback",
+    )
+    parser.add_argument("--position-bias-rw-std-m-sqrt-s", type=float, default=0.0)
+    parser.add_argument("--velocity-bias-rw-std-m-s-sqrt-s", type=float, default=0.0)
+    parser.add_argument("--noise-seed", type=int, default=None)
+    parser.add_argument("--cg-offset-x-m", type=float, default=0.0)
+    parser.add_argument("--wind-velocity-x-m-s", type=float, default=0.0,
+                        help="declared Gazebo wind X velocity (m/s), recorded per run")
+    parser.add_argument("--wind-velocity-y-m-s", type=float, default=0.0)
+    parser.add_argument("--wind-velocity-z-m-s", type=float, default=0.0)
+    parser.add_argument(
         "--ros-setup-scripts", action="append", type=Path,
         help="ROS setup scripts to source for the child environment "
         "(default: /opt/ros/humble/setup.bash and the px4_msgs overlay)",
@@ -358,6 +452,27 @@ def main() -> int:
         parser.error("altitude must be positive")
     if arguments.case_timeout <= 0.0:
         parser.error("case timeout must be positive")
+    if arguments.thrust_weight is not None and (
+        arguments.thrust_weight <= 0.0 or not np.isfinite(arguments.thrust_weight)
+    ):
+        parser.error("thrust-weight must be finite and positive")
+    if arguments.eso_bandwidth is not None and (
+        arguments.eso_bandwidth <= 0.0 or not np.isfinite(arguments.eso_bandwidth)
+    ):
+        parser.error("eso-bandwidth must be finite and positive")
+    if arguments.model_mass is not None and (
+        arguments.model_mass <= 0.0 or not np.isfinite(arguments.model_mass)
+    ):
+        parser.error("model-mass must be finite and positive")
+    if (
+        arguments.position_bias_rw_std_m_sqrt_s < 0.0
+        or arguments.velocity_bias_rw_std_m_s_sqrt_s < 0.0
+        or not all(np.isfinite(value) for value in (
+            arguments.position_bias_rw_std_m_sqrt_s,
+            arguments.velocity_bias_rw_std_m_s_sqrt_s,
+        ))
+    ):
+        parser.error("random-walk diffusion parameters must be finite and non-negative")
     acados_directory = arguments.acados_source_dir.resolve()
     if not (acados_directory / "lib/libacados.so").is_file():
         parser.error(f"acados shared libraries not found under {acados_directory}")
@@ -386,7 +501,20 @@ def main() -> int:
     if not arguments.skip_params:
         print(f"\nParameter guard ({len(DEFAULT_PARAMETERS)} parameters):", flush=True)
         try:
-            guard = ParamGuard()
+            guard = ParamGuard(
+                parameters=DEFAULT_PARAMETERS + (
+                    GuardedParameter(
+                        "SIM_GZ_ODOM_RW_P",
+                        arguments.position_bias_rw_std_m_sqrt_s,
+                        "external odometry position random walk",
+                    ),
+                    GuardedParameter(
+                        "SIM_GZ_ODOM_RW_V",
+                        arguments.velocity_bias_rw_std_m_s_sqrt_s,
+                        "external odometry velocity random walk",
+                    ),
+                )
+            )
             guard.__enter__()
         except ParamGuardError as error:
             guard_error = error
@@ -433,10 +561,31 @@ def main() -> int:
                 sys.executable,
                 str(PROJECT_ROOT / "integration/px4_sitl_hover.py"),
                 "--trajectory", case.trajectory,
-                "--reference-source", case.reference_source,
                 "--altitude", str(arguments.altitude),
                 "--log-directory", str(case_directory),
                 "--validate-model",
+                *(
+                    ["--thrust-weight", str(arguments.thrust_weight)]
+                    if arguments.thrust_weight is not None
+                    else []
+                ),
+                *(
+                    ["--eso-bandwidth", str(arguments.eso_bandwidth)]
+                    if arguments.eso_bandwidth is not None
+                    else []
+                ),
+                *(
+                    ["--model-mass", str(arguments.model_mass)]
+                    if arguments.model_mass is not None
+                    else []
+                ),
+                *( ["--disable-eso"] if arguments.disable_eso else [] ),
+                *( ["--disable-warm-start"] if arguments.disable_warm_start else [] ),
+                *( ["--direct-callback"] if arguments.direct_callback else [] ),
+                "--cg-offset-x-m", str(arguments.cg_offset_x_m),
+                "--wind-velocity-x-m-s", str(arguments.wind_velocity_x_m_s),
+                "--wind-velocity-y-m-s", str(arguments.wind_velocity_y_m_s),
+                "--wind-velocity-z-m-s", str(arguments.wind_velocity_z_m_s),
                 *case.arguments,
             ]
             result, exit_code = _run_case(

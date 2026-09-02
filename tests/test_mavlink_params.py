@@ -46,7 +46,14 @@ def test_heartbeat_check_reports_dead_server() -> None:
 def test_guard_applies_and_restores_parameters() -> None:
     # 0.125 is exact in REAL32 (the MAVLink param wire format); 0.1 would not
     # round-trip bit-exactly.
-    params = {"SIM_BAT_DRAIN": 0.5, "NAV_DLL_ACT": 0.125}
+    params = {
+        "SIM_BAT_DRAIN": 0.5,
+        "NAV_DLL_ACT": 0.125,
+        # The fake PX4 only answers PARAM_REQUEST_READ for parameters it
+        # exposes.  Include the full guarded policy so this test also covers
+        # the RC/Offboard failsafe parameters.
+        **{parameter.name: 99.0 for parameter in DEFAULT_PARAMETERS[2:]},
+    }
     with FakePx4(params=params) as px4:
         guard = ParamGuard(
             parameters=DEFAULT_PARAMETERS,
@@ -57,8 +64,10 @@ def test_guard_applies_and_restores_parameters() -> None:
             for parameter in DEFAULT_PARAMETERS:
                 assert px4.params[parameter.name] == pytest.approx(parameter.value)
         # Restored on exit.
-        for name, value in params.items():
-            assert px4.params[name] == pytest.approx(value)
+        assert px4.params["SIM_BAT_DRAIN"] == pytest.approx(0.5)
+        assert px4.params["NAV_DLL_ACT"] == pytest.approx(0.125)
+        for parameter in DEFAULT_PARAMETERS[2:]:
+            assert px4.params[parameter.name] == pytest.approx(99.0)
         assert guard._connection is None
 
 

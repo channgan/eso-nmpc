@@ -25,7 +25,7 @@ actual_body_rate_dot = (body_rate_sp - actual_body_rate) / rate_tau
 ## 目录
 
 ```text
-config/nmpc.yaml                  质量、时域、权重和输入约束
+config/nmpc.yaml                  质量、时域、代价误差尺度和输入约束
 nmpc/model/quadrotor.py           NumPy 动力学与 CasADi/acados 模型
 nmpc/reference.py                 悬停参考、平坦性姿态/推力映射
 nmpc/solver/acados_solver.py      OCP 和实时控制器包装
@@ -101,7 +101,7 @@ cfg = load_config()
 controller = AcadosNmpc(cfg)
 
 x = np.r_[position_ned, velocity_ned, quaternion_wxyz, body_rate_xyz]
-d_hat = np.zeros(3)  # 后续替换为 ESO 的世界系等效加速度估计
+d_hat = np.zeros(3)  # 世界/NED 系等效加速度扰动估计（ESO 或外部观测器）
 ref = stationary_reference(np.array([0.0, 0.0, -1.0]), cfg.controller.horizon_steps, cfg.hover_thrust)
 command = controller.solve(x, ref, d_hat)
 
@@ -153,19 +153,19 @@ export PYTHONPATH=/home/cy/eso_nmpc:$PYTHONPATH
 0.1 秒的里程计时间戳间断会自动剔除，不参与模型误差统计。
 
 每次修改模型、控制器、PX4 PID、滤波、控制频率或推力映射后，必须运行固定回归集：
-定点悬停、PX4 平滑后的点到点位置指令、圆轨迹和 8 字航线。原始位置硬阶跃不用于
-部署调参与验收。点到点用例使用 PX4 `PositionSmoothing` 输出的完整 NMPC 预测时域，
-再由上位机完成逆动力学参考转换和求解。
+定点悬停、平滑点到点位置指令、圆轨迹和 8 字航线。原始位置硬阶跃不用于部署调参与
+验收。四项用例都在上位机生成完整、时间参数化的 NMPC 预测时域，再由上位机完成
+逆动力学参考转换和求解；PX4 只接收 NMPC 的最终控制输出。
 
-参考接口分为两条显式链路。默认 `--reference-source px4-smoothed` 将 Offboard 目标点送入
-PX4 平滑器，再订阅 `/fmu/out/nmpc_trajectory`；`--reference-source direct` 从
-`/nmpc/in/trajectory_setpoint` 接收 `NmpcTrajectorySetpoint`，供已经完成时间参数化的
-完整轨迹直接进入 NMPC。基线节点在 direct 模式会用同一话题发布测试轨迹，之后可直接
-替换为外部规划器。两条链路不会自动猜测或混用，最终统一经过
-`KinematicTrajectory` 的时域、有限值和运动包线检查。
+参考接口只有一条上位机直连链路：上位机发布并消费
+`/nmpc/in/trajectory_setpoint` 中的 `NmpcTrajectorySetpoint`，使已经完成时间参数化的
+完整轨迹直接进入 NMPC。基线节点会用同一话题发布测试轨迹，之后可直接替换为外部规划器。
+轨迹最终经过 `KinematicTrajectory` 的时域、有限值和运动包线检查；PX4 不生成 NMPC
+参考轨迹，也不再提供平滑兼容路径。
+完整轨迹输入采用深度为 1 的 latest-wins 队列，安全超时同时检查接收端单调时钟和
+PX4 同步时钟域的消息 `timestamp`，避免 DDS 排队旧包造成误拒绝并保留真机时钟保护。
 
-自动基线固定运行四项：悬停与 1 m 多方向点到点使用 PX4 指点平滑接口，圆形与
-8 字使用完整轨迹接口：
+自动基线固定运行四项，全部使用上位机完整轨迹接口：
 
 ```bash
 .venv/bin/python integration/run_sitl_regression.py
@@ -173,8 +173,39 @@ PX4 平滑器，再订阅 `/fmu/out/nmpc_trajectory`；`--reference-source direc
 
 脚本逐项安全起降，并写入
 `background/baseline_runs/<timestamp>/<case>/trajectory.csv`、`summary.json` 和
-`run.log`。测试组根目录同时生成 `suite_summary.json` 与便于直接阅读的
-`suite_summary.md`；单项失败后仍继续运行其余用例，以保留完整基线结果。
+`trajectory.png`、`run.log`。`trajectory.png` 包含水平实际/参考轨迹、位置、水平速度
+和位置误差。测试组根目录同时生成 `suite_summary.json` 与便于直接阅读的
+`suite_summary.md`。四项用例完成后还会生成按悬停、指点、圆形、八字纵向排列的
+`trajectory_suite_long.png`；单项失败后仍继续运行其余用例，以保留完整基线结果。
+每次成功求解还记录 `t_rx`、`t_pre_end`、`t_solve_0`、`t_solve_1`、`t_pub` 五个单调
+时钟时间戳；`summary.json` 的 `nmpc_timestamp_timing_ms` 汇总各阶段的
+median/P95/P99/max。更细的 `t_state`、`t_eso`、`t_ref`、`t_set` 以及
+`acados_timing_ms`/`acados_solver_stats_s` 会进一步区分状态转换、ESO、参考构造、
+参数写入、纯 native solve 和轨迹提取时间。
+
+Orin 上可以用仓库自带脚本完成依赖安装、ARM64 solver 生成、ROS 工作区编译和环境检查：
+
+```bash
+cd /path/to/eso_nmpc
+./tools/install_orin_dependencies.sh --px4-ws "$HOME/px4_ros2_ws"
+```
+
+脚本可重复执行；acados、Micro-XRCE-DDS-Agent 和 solver 已存在时会复用。它不会替换
+`px4_msgs` 分支，也不会把 WSL 的 x86 二进制复制到 Orin。需要跳过某一步时可使用
+`--skip-acados`、`--skip-agent` 或 `--skip-build`，完整参数见
+[`cpp/eso_nmpc_node/DEPLOYMENT.md`](cpp/eso_nmpc_node/DEPLOYMENT.md)。
+
+真机 C++ 节点还支持持续异步飞行记录：设置 `flight_log_root` 后，每次启动会在该目录下
+建立 `YYYYMMDD_HHMMSS_mmm` 子目录，再写入 `nmpc_flight.csv` 和 `nmpc_timing.csv`。节点会把
+每次成功或失败的求解写入有界队列并定期刷盘，不在控制回调中执行磁盘 I/O。飞行 CSV 包含
+PX4 同步时间戳、13 维实测状态、当前参考、前馈、body-rate/推力输出、ESO 估计、求解状态
+和各阶段延迟；队列溢出会记录 `logger_dropped_samples`。真机还应同时保存 PX4 `.ulg`，
+飞后按 PX4 时间戳与上位机 CSV 对齐后再计算 RMSE 和绘图。
+
+断联保护遵循 PX4 Commander 的原生策略：遥控器接收机断联（`COM_RC_LOSS_T=1.0 s`）
+执行降落（`NAV_RCL_ACT=3`）；上位机 Offboard 链路断联（`COM_OF_LOSS_T=1.0 s`）
+切换 PX4 Position mode（`COM_OBL_RC_ACT=0`）。`COM_RCL_EXCEPT=0` 保证 Offboard
+期间 RC 断联不会被忽略。测试上位机断联时必须保持有效 RC，否则两种 failsafe 会混在一起。
 
 ### 一键运行的前提：三个 SITL 服务
 
@@ -226,8 +257,36 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest
 起飞/轨迹/下降，最后请求 PX4 Land 并确认解锁。圆轨迹的进入和退出段同时连续匹配
 位置、速度与加速度。
 
+### C++ 单进程控制节点
+
+为降低 Python executor/GIL 和内部对象转换开销，新增 `cpp/eso_nmpc_node`。它在同一
+ROS 2 进程内直接执行 `VehicleOdometry callback → ESO → 完整轨迹参考 → Acados →
+VehicleRatesSetpoint`，中间不经过 ROS topic；`OffboardControlMode` 由独立 callback
+group 的 heartbeat 定时器发布。当前节点复用 13 状态、4 输入、N=30 的生成 solver，
+参数示例位于 `cpp/eso_nmpc_node/config/eso_nmpc_cpp.yaml`。将它作为包放入
+PX4 ROS 2 工作空间的 `src/eso_nmpc_node`，构建命令为：
+
+```bash
+cd /home/cy/px4_ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+colcon build --packages-select eso_nmpc_node \
+  --cmake-args -DESO_NMPC_ROOT=/path/to/eso_nmpc \
+  -DACADOS_SOURCE_DIR=/path/to/acados
+```
+
+新机器不能直接复用其他平台的 acados `.so`。先在目标机安装 acados，
+从仓库根目录运行 `python3 solver/generate_solver.py` 生成当前 13 维求解器，
+再编译 C++ 节点；这样 Orin 上得到的是 ARM64 原生库。
+
+当前 C++ 节点先用于控制链和时序冒烟，尚未替换 Python 基线节点的起飞/降落状态机；
+接入 SITL 时需确保外部规划器持续发布 `/nmpc/in/trajectory_setpoint` 完整时域。
+
 ## 当前边界
 
 - 已实现第一阶段 NMPC 数学核心、扰动参数接口、C solver 生成配置、离线模型/接口测试与 benchmark。
 - 已包含 PX4 x500 SITL 的 ROS 2 悬停/圆轨迹验收节点和线性悬停点推力归一化；该映射仅用于当前 x500 仿真。
-- 尚未包含 ESO；角速度以 PX4 内环加一阶滞后建模（`rate_tau`）。接真机前必须重新测量质量并标定推力模型。
+- `feature/eso` 分支已包含可配置的速度通道 LESO（`config/nmpc.yaml` 的 `eso` 段），
+  并将同一扰动估计同时送入逆动力学前馈和 NMPC 预测；默认带宽为 `3 rad/s`，接真机前
+  仍必须重新测量质量、标定推力模型并通过四项基线验证。角速度继续以 PX4 内环加一阶
+  滞后建模（`rate_tau`）。
