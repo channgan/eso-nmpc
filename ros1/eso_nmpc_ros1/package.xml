@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>eso_nmpc_ros1</name>
+  <version>0.1.0</version>
+  <description>ROS 1 MAVROS adapter for the ESO-NMPC controller.</description>
+
+  <maintainer email="cy@localhost">cy</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+
+  <export>
+  </export>
+</package>

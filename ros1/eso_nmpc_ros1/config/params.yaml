@@ -1,0 +1,7 @@
+eso_nmpc_ros1:
+  config_path: "$(find eso_nmpc_ros1)/../../config/nmpc.yaml"
+  altitude: 1.0
+  prestream_s: 1.5
+  flight_duration_s: 12.0
+  offboard_mode: "OFFBOARD"
+  timing_log: ""

@@ -7,3 +7,13 @@ generated/
 simulation_output/
 
 background/
+
+# ROS/catkin and local native build products.
+build/
+devel/
+install/
+build_cpp/
+install_cpp/
+log_cpp/
+ros1/eso_nmpc_ros1/build/
+ros1/eso_nmpc_ros1/devel/
