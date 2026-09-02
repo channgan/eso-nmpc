@@ -35,7 +35,8 @@ from nmpc.trajectory import quintic_segment, smooth_profile
 class CppHoverSupervisor(Node):
     def __init__(self, output_directory: Path, trajectory: str = "hover",
                  radius: float = 2.0, speed: float = 1.0,
-                 point_hold_duration: float = 2.0) -> None:
+                 point_hold_duration: float = 2.0,
+                 safety_drift_limit: float | None = None) -> None:
         super().__init__("cpp_nmpc_hover_supervisor")
         self.output_directory = output_directory
         if trajectory not in ("hover", "point_1m", "circle", "figure8"):
@@ -44,6 +45,7 @@ class CppHoverSupervisor(Node):
         self.radius = float(radius)
         self.speed = float(speed)
         self.point_hold_duration = float(point_hold_duration)
+        self.safety_drift_limit = safety_drift_limit
         self.points = 31
         self.sample_time = 0.02
         self.ascent_duration = 4.0
@@ -361,7 +363,9 @@ class CppHoverSupervisor(Node):
                 }
             )
             horizontal_drift = float(np.linalg.norm(position[:2] - self.initial_position[:2]))
-            drift_limit = 5.0 if self.trajectory in ("circle", "figure8") else 2.0
+            drift_limit = self.safety_drift_limit
+            if drift_limit is None:
+                drift_limit = 5.0 if self.trajectory in ("circle", "figure8") else 2.0
             if horizontal_drift > drift_limit or position[2] < self.initial_position[2] - 1.6:
                 self._abort(f"flight safety bound exceeded: drift={horizontal_drift:.2f} z={position[2]:.2f}")
                 return
@@ -426,6 +430,7 @@ def main() -> int:
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--step-dwell", type=float, default=2.0)
+    parser.add_argument("--safety-drift-limit", type=float, default=None)
     parser.add_argument("--position-bias-rw-std-m-sqrt-s", type=float, default=0.0)
     parser.add_argument("--velocity-bias-rw-std-m-s-sqrt-s", type=float, default=0.0)
     parser.add_argument(
@@ -434,6 +439,8 @@ def main() -> int:
         help="不在本进程内修改 PX4 参数；由外层回归编排器统一管理参数。",
     )
     args = parser.parse_args()
+    if args.safety_drift_limit is not None and args.safety_drift_limit <= 0.0:
+        parser.error("safety-drift-limit must be positive")
     parameters = DEFAULT_PARAMETERS + (
         GuardedParameter(
             "SIM_GZ_ODOM_RW_P",
@@ -450,7 +457,8 @@ def main() -> int:
     with parameter_context:
         rclpy.init()
         node = CppHoverSupervisor(
-            args.output_directory, args.trajectory, args.radius, args.speed, args.step_dwell
+            args.output_directory, args.trajectory, args.radius, args.speed,
+            args.step_dwell, args.safety_drift_limit
         )
         try:
             while rclpy.ok() and not node.finished:
