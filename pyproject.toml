@@ -16,7 +16,7 @@ dependencies = [
 acados = ["casadi>=3.7.2,<3.8"]
 validation = ["scipy>=1.13"]
 # The SITL baseline runner guards PX4 parameters over MAVLink.
-dev = ["pytest>=7.0", "pymavlink>=2.4"]
+dev = ["pytest>=7.0", "pymavlink>=2.4", "matplotlib>=3.7"]
 
 [tool.setuptools.packages.find]
 include = ["nmpc*"]
