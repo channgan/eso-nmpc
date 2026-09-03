@@ -1,8 +1,9 @@
 eso_nmpc_cpp:
-  mass: 2.0
+  # Gazebo Classic iris.sdf.jinja total link mass: 1.500 + 0.015 + 4*0.005 kg.
+  mass: 1.535
   gravity: 9.80665
   rate_tau: 0.15
-  # Must match config/nmpc.yaml and the generated acados solver.
+  # Must match config/nmpc_iris_gazebo_classic.yaml and its generated solver.
   sample_time: 0.01
   horizon_steps: 30
   reference_timeout: 0.20
@@ -17,6 +18,19 @@ eso_nmpc_cpp:
   service_timeout_s: 8.0
   state_timeout_s: 1.0
   offboard_mode: OFFBOARD
+  # On solver fault, leave OFFBOARD and let PX4 hold position. Recovery never
+  # re-enters OFFBOARD automatically; the operator must select it manually.
+  # AUTO.LOITER is PX4's autonomous position-hold mode and does not depend on
+  # a valid RC/manual-control stream during an Offboard fault.
+  position_mode: AUTO.LOITER
+  solver_recovery_time: 2.0
+  # Handoff gate: hold position before prestreaming and wait briefly after
+  # OFFBOARD confirmation before allowing trajectory control.
+  handoff_stable_time: 1.0
+  offboard_entry_delay: 0.2
+  handoff_max_horizontal_speed: 0.15
+  handoff_max_vertical_speed: 0.10
+  handoff_max_position_drift: 0.25
   auto_land_after_s: 0.0
   eso_enabled: true
   eso_activation_delay: 3.0
@@ -39,13 +53,19 @@ eso_nmpc_cpp:
   rc_hold_max_vertical_speed: 0.6
   rc_max_horizontal_position_lead: 0.8
   rc_max_vertical_position_lead: 0.4
+  # iris motor plugin: k_f=5.84e-06, omega_max=1100 rad/s, four rotors.
   thrust_min: 3.3278
-  thrust_max: 27.7314
-  hover_throttle: 0.3653  # 500 g/motor, interpolated from the measured thrust table
+  thrust_max: 28.2656
+  # weight / total max thrust for PX4's normalized direct thrust setpoint.
+  hover_throttle: 0.532563
   throttle_min: 0.12
   throttle_max: 1.0
   body_rate_max_x: 1.0
   body_rate_max_y: 1.0
   body_rate_max_z: 1.0
-  flight_log_root: /home/ljt/nmpc_log
+  flight_log_root: /home/cy2/nmpc_log
   timing_log_path: ""
+  timing_flush_period_ms: 250
+  timing_queue_size: 4096
+  max_consecutive_solve_failures: 3
+  fallback_hold_time: 0.05

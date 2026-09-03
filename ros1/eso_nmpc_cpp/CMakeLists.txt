@@ -19,14 +19,16 @@ set(ACADOS_SOURCE_DIR "$ENV{ACADOS_SOURCE_DIR}" CACHE PATH "acados source tree")
 if(ACADOS_SOURCE_DIR STREQUAL "")
   set(ACADOS_SOURCE_DIR "${ESO_NMPC_ROOT}/../acados" CACHE PATH "acados source tree" FORCE)
 endif()
-set(ACADOS_GENERATED_DIR "${ESO_NMPC_ROOT}/generated/quadrotor_nmpc_ros1_100hz")
-set(ACADOS_HASH "e03501ad")
+set(ACADOS_GENERATED_DIR "${ESO_NMPC_ROOT}/generated/quadrotor_nmpc_ros1_iris_100hz")
+# Solver generated from the Gazebo Classic Iris-matched configuration
+# (mass=1.535 kg, sample_time=0.01 s).
+set(ACADOS_HASH "2109265f")
 
 if(NOT EXISTS "${ACADOS_SOURCE_DIR}/include/acados_c/ocp_nlp_interface.h")
   message(FATAL_ERROR "acados headers not found; set ACADOS_SOURCE_DIR")
 endif()
-set(ACADOS_SOLVER_HEADER "${ACADOS_GENERATED_DIR}/acados_solver_ocp_quadrotor_nmpc_ros1_100hz_${ACADOS_HASH}.h")
-set(ACADOS_SOLVER_LIB "${ACADOS_GENERATED_DIR}/libacados_ocp_solver_ocp_quadrotor_nmpc_ros1_100hz_${ACADOS_HASH}.so")
+set(ACADOS_SOLVER_HEADER "${ACADOS_GENERATED_DIR}/acados_solver_ocp_quadrotor_nmpc_ros1_iris_100hz_${ACADOS_HASH}.h")
+set(ACADOS_SOLVER_LIB "${ACADOS_GENERATED_DIR}/libacados_ocp_solver_ocp_quadrotor_nmpc_ros1_iris_100hz_${ACADOS_HASH}.so")
 if(NOT EXISTS "${ACADOS_SOLVER_HEADER}" OR NOT EXISTS "${ACADOS_SOLVER_LIB}")
   message(FATAL_ERROR "Generated acados solver missing; run solver/generate_solver.py first")
 endif()
@@ -51,4 +53,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
   LINK_FLAGS "-Wl,--disable-new-dtags")
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+catkin_install_python(PROGRAMS scripts/rc_injector.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY config launch DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

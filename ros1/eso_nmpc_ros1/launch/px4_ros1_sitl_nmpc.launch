@@ -1,0 +1,46 @@
+<launch>
+  <!-- Two repositories, one ROS 1/Gazebo Classic simulation. -->
+  <arg name="px4_root" default="$(optenv PX4_ROOT /home/cy2/apx)" />
+  <arg name="nmpc_root" default="$(optenv ESO_NMPC_ROOT /home/cy2/nmpc)" />
+  <arg name="config_path" default="$(arg nmpc_root)/config/nmpc_iris_gazebo_classic.yaml" />
+  <arg name="vehicle" default="iris" />
+  <arg name="gui" default="false" />
+  <arg name="paused" default="false" />
+  <arg name="trajectory" default="hover" />
+  <arg name="altitude" default="1.0" />
+  <arg name="radius" default="0.5" />
+  <arg name="speed" default="0.25" />
+  <arg name="ascent_s" default="4.0" />
+  <arg name="hold_s" default="6.0" />
+  <arg name="transition_s" default="3.0" />
+  <arg name="descent_s" default="4.0" />
+  <arg name="settle_s" default="1.5" />
+  <arg name="timing_log" default="" />
+  <arg name="world" default="$(arg px4_root)/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/empty.world" />
+  <arg name="sdf" default="$(arg px4_root)/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models/$(arg vehicle)/$(arg vehicle).sdf" />
+  <env name="GAZEBO_PLUGIN_PATH" value="$(arg px4_root)/build/px4_sitl_default/build_gazebo-classic:$(optenv GAZEBO_PLUGIN_PATH)" />
+  <env name="GAZEBO_MODEL_PATH" value="$(arg px4_root)/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models:$(optenv GAZEBO_MODEL_PATH)" />
+
+  <!-- PX4 launch resolves $(find px4) and $(find mavlink_sitl_gazebo); source
+       both PX4 and MAVROS workspaces before invoking roslaunch. -->
+  <include file="$(arg px4_root)/launch/mavros_posix_sitl.launch">
+    <arg name="vehicle" value="$(arg vehicle)" />
+    <arg name="world" value="$(arg world)" />
+    <arg name="sdf" value="$(arg sdf)" />
+    <arg name="gui" value="$(arg gui)" />
+    <arg name="paused" value="$(arg paused)" />
+    <arg name="interactive" value="false" />
+    <arg name="fcu_url" value="udp://:14540@localhost:14557" />
+  </include>
+
+  <!-- The active ROS1 controller is the native C++ node, matching the ROS2
+       C++ hot path.  Python is deliberately not launched here.  The C++ node
+       consumes /nmpc/in/trajectory_setpoint; an external trajectory publisher
+       must continuously provide a complete horizon. -->
+  <rosparam command="load" file="$(find eso_nmpc_cpp)/config/eso_nmpc_cpp.yaml" />
+  <param name="/eso_nmpc_cpp/shadow_mode" value="false" />
+  <param name="/eso_nmpc_cpp/control_enabled_at_start" value="true" />
+  <param name="/eso_nmpc_cpp/auto_manage_flight" value="true" />
+  <param name="/eso_nmpc_cpp/timing_log_path" value="$(arg timing_log)" />
+  <node pkg="eso_nmpc_cpp" type="eso_nmpc_cpp" name="eso_nmpc_cpp" output="screen" />
+</launch>

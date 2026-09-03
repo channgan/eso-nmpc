@@ -202,7 +202,7 @@ struct AcadosController::Impl
   int n{kGeneratedN};
   double mass{0.0};
   double gravity{0.0};
-  double sample_time{0.02};
+  double sample_time{0.01};
   double thrust_min{0.0};
   double thrust_max{0.0};
   Eigen::Vector3d body_rate_max{Eigen::Vector3d::Ones()};
@@ -365,12 +365,17 @@ void AcadosController::reset_warm_start()
   impl_->have_last = false;
 }
 
+bool AcadosController::warm_start_available() const
+{
+  return impl_->have_last;
+}
+
 EsoNmpcNode::EsoNmpcNode()
 : Node("eso_nmpc_cpp"),
   mass_(declare_parameter("mass", 2.0643076923)),
   gravity_(declare_parameter("gravity", 9.80665)),
   rate_tau_(declare_parameter("rate_tau", 0.15)),
-  sample_time_(declare_parameter("sample_time", 0.02)),
+  sample_time_(declare_parameter("sample_time", 0.01)),
   horizon_steps_(declare_parameter("horizon_steps", 30)),
   reference_timeout_s_(declare_parameter("reference_timeout", 0.20)),
   rc_timeout_s_(declare_parameter("rc_timeout", 0.50)),
@@ -425,6 +430,14 @@ EsoNmpcNode::EsoNmpcNode()
     throw std::invalid_argument("flight logger buffer size and flush period must be positive");
   }
   control_enabled_.store(declare_parameter("control_enabled_at_start", true));
+  max_consecutive_solve_failures_ = declare_parameter("max_consecutive_solve_failures", 3);
+  fallback_hold_time_s_ = declare_parameter("fallback_hold_time", 0.05);
+  if (max_consecutive_solve_failures_ < 1) {
+    throw std::invalid_argument("max_consecutive_solve_failures must be positive");
+  }
+  if (!(fallback_hold_time_s_ >= 0.0) || !std::isfinite(fallback_hold_time_s_)) {
+    throw std::invalid_argument("fallback_hold_time must be non-negative");
+  }
   if (control_enabled_.load()) {
     control_enable_time_s_ = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -496,6 +509,8 @@ void EsoNmpcNode::enable_callback(std_msgs::msg::Bool::ConstSharedPtr message)
     eso_active_ = false;
     last_disturbance_.setZero();
     last_command_thrust_ = mass_ * gravity_;
+    consecutive_solve_failures_ = 0;
+    last_valid_command_available_ = false;
     std::lock_guard<std::mutex> lock(mutex_);
     rc_mode_active_ = false;
     rc_hold_active_ = false;
@@ -508,6 +523,8 @@ void EsoNmpcNode::enable_callback(std_msgs::msg::Bool::ConstSharedPtr message)
     rc_hold_active_ = false;
     rc_neutral_latched_ = false;
     controller_.reset_warm_start();
+    consecutive_solve_failures_ = 0;
+    last_valid_command_available_ = false;
     RCLCPP_INFO(get_logger(), "NMPC control disabled");
   }
 }
@@ -883,12 +900,44 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
     log.timing = timing;
     enqueue_flight_log(std::move(log));
   };
-  if (!controller_.solve(state, references, controls, trajectory.points, disturbance, command)) {
+  const bool had_warm_start = controller_.warm_start_available();
+  bool solve_success = controller_.solve(state, references, controls, trajectory.points, disturbance, command);
+  if (!solve_success && had_warm_start) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                         "acados warm-start solve failed; retrying cold start");
+    controller_.reset_warm_start();
+    solve_success = controller_.solve(state, references, controls, trajectory.points, disturbance, command);
+  }
+  if (!solve_success) {
+    ++consecutive_solve_failures_;
+    const double now_s = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool can_hold_last = last_valid_command_available_ &&
+      now_s - last_valid_command_time_s_ <= fallback_hold_time_s_;
+    if (can_hold_last) {
+      publish_rates(last_valid_command_);
+      publish_heartbeat();
+    }
     enqueue_record(false, std::chrono::steady_clock::time_point{}, std::chrono::steady_clock::time_point{});
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "acados solve failed; keeping heartbeat only");
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                         "acados solve failed (%d/%d); bounded fallback=%s",
+                         consecutive_solve_failures_, max_consecutive_solve_failures_,
+                         can_hold_last ? "last command" : "none");
+    if (consecutive_solve_failures_ >= max_consecutive_solve_failures_) {
+      control_enabled_.store(false);
+      controller_.reset_warm_start();
+      eso_active_ = false;
+      last_valid_command_available_ = false;
+      RCLCPP_ERROR(get_logger(), "NMPC disabled after repeated acados solve failures");
+    }
     return;
   }
+  consecutive_solve_failures_ = 0;
   last_command_thrust_ = command[0];
+  last_valid_command_ = command;
+  last_valid_command_time_s_ = std::chrono::duration<double>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  last_valid_command_available_ = true;
   const auto timing_pub_start = std::chrono::steady_clock::now();
   publish_rates(command);
   publish_heartbeat();

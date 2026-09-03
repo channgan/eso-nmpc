@@ -536,6 +536,30 @@ class RcVelocityReference:
         )
 
 
+def build_kinematic_horizon(
+    sample: Callable[[float], KinematicSetpoint],
+    start_time: float,
+    horizon_steps: int,
+    sample_time: float,
+) -> KinematicTrajectory:
+    """Materialize the direct horizon shared by ROS1 and ROS2 adapters."""
+    if horizon_steps < 1 or not np.isfinite(sample_time) or sample_time <= 0.0:
+        raise ValueError("horizon_steps and sample_time must be positive")
+    points = horizon_steps + 1
+    samples = [sample(start_time + stage * sample_time) for stage in range(points)]
+    acceleration = np.asarray([item.acceleration for item in samples], dtype=float)
+    yaw = np.asarray([item.yaw for item in samples], dtype=float)
+    return KinematicTrajectory(
+        position=np.asarray([item.position for item in samples], dtype=float),
+        velocity=np.asarray([item.velocity for item in samples], dtype=float),
+        acceleration=acceleration,
+        jerk=np.gradient(acceleration, sample_time, axis=0, edge_order=1),
+        yaw=yaw,
+        yaw_rate=np.gradient(np.unwrap(yaw), sample_time, edge_order=1),
+        sample_time=sample_time,
+    )
+
+
 def build_reference_horizon(
     sample: Callable[[float], KinematicSetpoint],
     start_time: float,

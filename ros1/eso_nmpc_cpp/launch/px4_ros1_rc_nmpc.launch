@@ -1,0 +1,32 @@
+<launch>
+  <arg name="px4_root" default="$(optenv PX4_ROOT /home/cy2/apx)" />
+  <arg name="vehicle" default="iris" />
+  <arg name="gui" default="false" />
+  <arg name="paused" default="false" />
+  <arg name="world" default="$(arg px4_root)/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/empty.world" />
+  <arg name="sdf" default="$(arg px4_root)/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models/$(arg vehicle)/$(arg vehicle).sdf" />
+
+  <env name="GAZEBO_PLUGIN_PATH" value="$(arg px4_root)/build/px4_sitl_default/build_gazebo-classic:$(optenv GAZEBO_PLUGIN_PATH)" />
+  <env name="GAZEBO_MODEL_PATH" value="$(arg px4_root)/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models:$(optenv GAZEBO_MODEL_PATH)" />
+
+  <include file="$(arg px4_root)/launch/mavros_posix_sitl.launch">
+    <arg name="vehicle" value="$(arg vehicle)" />
+    <arg name="world" value="$(arg world)" />
+    <arg name="sdf" value="$(arg sdf)" />
+    <arg name="gui" value="$(arg gui)" />
+    <arg name="paused" value="$(arg paused)" />
+    <arg name="interactive" value="false" />
+    <arg name="fcu_url" value="udp://:14540@localhost:14557" />
+  </include>
+
+  <rosparam command="load" file="$(find eso_nmpc_cpp)/config/eso_nmpc_cpp.yaml" />
+  <param name="/eso_nmpc_cpp/shadow_mode" value="false" />
+  <param name="/eso_nmpc_cpp/control_enabled_at_start" value="false" />
+  <param name="/eso_nmpc_cpp/auto_manage_flight" value="true" />
+  <param name="/eso_nmpc_cpp/auto_land_after_s" value="14.0" />
+  <param name="/eso_nmpc_cpp/rc_aux_channel" value="6" />
+  <param name="/eso_nmpc_cpp/timing_log_path" value="/home/cy2/nmpc_log/rc_injection_10ms/nmpc_timing.csv" />
+
+  <node pkg="eso_nmpc_cpp" type="eso_nmpc_cpp" name="eso_nmpc_cpp" output="screen" />
+  <node pkg="eso_nmpc_cpp" type="rc_injector.py" name="eso_nmpc_rc_injector" output="screen" />
+</launch>

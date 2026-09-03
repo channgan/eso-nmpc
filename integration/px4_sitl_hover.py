@@ -48,6 +48,7 @@ from nmpc.setpoint import (
     RcVelocityReference,
     apply_deadzone,
     build_reference_from_trajectory,
+    build_kinematic_horizon,
 )
 from nmpc.solver.acados_solver import AcadosNmpc
 from nmpc.types import Control, Reference
@@ -582,21 +583,11 @@ class Px4NmpcHover(Node):
         self._publish_initial_direct_trajectory()
 
     def _kinematic_horizon(self, elapsed: float) -> KinematicTrajectory:
-        sample = self._trajectory_sample
-        points = self.config.controller.horizon_steps + 1
-        sample_time = self.config.controller.sample_time
-        samples = [sample(elapsed + stage * sample_time) for stage in range(points)]
-        acceleration = np.asarray([item.acceleration for item in samples], dtype=float)
-        jerk = np.gradient(acceleration, sample_time, axis=0, edge_order=1)
-        yaw = np.asarray([item.yaw for item in samples], dtype=float)
-        return KinematicTrajectory(
-            position=np.asarray([item.position for item in samples], dtype=float),
-            velocity=np.asarray([item.velocity for item in samples], dtype=float),
-            acceleration=acceleration,
-            jerk=jerk,
-            yaw=yaw,
-            yaw_rate=np.gradient(np.unwrap(yaw), sample_time, edge_order=1),
-            sample_time=sample_time,
+        return build_kinematic_horizon(
+            self._trajectory_sample,
+            start_time=elapsed,
+            horizon_steps=self.config.controller.horizon_steps,
+            sample_time=self.config.controller.sample_time,
         )
 
     def _publish_direct_trajectory(self, trajectory: KinematicTrajectory) -> None:

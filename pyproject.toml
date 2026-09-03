@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "eso-nmpc"
 version = "0.1.0"
 description = "Quadrotor NMPC with an acados runtime disturbance interface"
-requires-python = ">=3.10"
+requires-python = ">=3.8"
 dependencies = [
     "numpy>=1.23",
     "PyYAML>=6.0",

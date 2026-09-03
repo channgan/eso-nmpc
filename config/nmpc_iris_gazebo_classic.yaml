@@ -1,0 +1,77 @@
+model:
+  # Gazebo Classic iris.sdf.jinja: base_link 1.500 kg + IMU 0.015 kg +
+  # four rotor links 0.005 kg each = 1.535 kg total.
+  mass: 1.535
+  gravity: 9.80665
+  # Closed-loop PX4 rate response measured in SITL; the SDF motor plugin's
+  # separate up/down rotor lags are faster (0.0125/0.025 s).
+  rate_tau: 0.15
+
+controller:
+  sample_time: 0.01
+  control_period: 0.01
+  horizon_steps: 30
+  reference_timeout: 0.20
+  qp_solver_cond_N: 5
+  nlp_solver_type: SQP_RTI
+  integrator_type: ERK
+  levenberg_marquardt: 1.0e-4
+  warm_start: true
+
+cost_scales:
+  weight_factor: 0.7
+  position_error_m: [0.1, 0.1, 0.0707106781]
+  velocity_error_m_s: [0.1, 0.1, 0.1]
+  attitude_error_deg: [5.0, 5.0, 5.0]
+  thrust_correction_n: 0.418330013
+  body_rate_correction_deg_s: [5.0, 5.0, 5.0]
+
+limits:
+  # iris motor plugin: motorConstant=5.84e-06, maxRotVelocity=1100 rad/s.
+  # Four rotors therefore provide 4 * k_f * omega_max^2 = 28.2656 N.
+  # Keep the same armed-flight safety floor used by the PX4 adapter; the SDF
+  # rotor itself can command zero, but NMPC should not request a cut in flight.
+  thrust_min: 3.3278
+  thrust_max: 28.2656
+  body_rate_max: [1.0, 1.0, 1.0]
+  horizontal_speed_max: 2.0
+  vertical_speed_max_up: 3.0
+  vertical_speed_max_down: 1.5
+  horizontal_acceleration_max: 2.0
+  vertical_acceleration_max_up: 4.0
+  vertical_acceleration_max_down: 3.0
+  jerk_max: 4.0
+  jerk_consistency_tolerance: 0.5
+  tilt_max_deg: 45.0
+
+px4:
+  # PX4's normalized direct thrust setpoint is linear in total thrust;
+  # weight / total max thrust = 0.532563 for this SDF (MPC_THR_HOVER default
+  # is 0.5 for the Classic Iris airframe).
+  hover_throttle: 0.532563
+  throttle_min: 0.12
+  throttle_max: 1.0
+
+manual_control:
+  deadzone: 0.08
+  timeout: 0.50
+  max_horizontal_speed: 2.0
+  max_vertical_speed: 0.5
+  max_yaw_rate: 0.5
+  max_horizontal_acceleration: 2.0
+  max_vertical_acceleration: 0.6
+  max_yaw_acceleration: 1.0
+  max_horizontal_position_lead: 0.8
+  max_vertical_position_lead: 0.4
+
+eso:
+  enabled: true
+  bandwidth_rad_s: 3.0
+  disturbance_clamp_m_s2: 1.0
+  activation_delay_s: 3.0
+  innovation_limit_m_s: 0.5
+
+code_generation:
+  model_name: quadrotor_nmpc_ros1_iris_100hz
+  json_file: quadrotor_nmpc_ros1_iris_100hz.json
+  code_export_directory: generated/quadrotor_nmpc_ros1_iris_100hz

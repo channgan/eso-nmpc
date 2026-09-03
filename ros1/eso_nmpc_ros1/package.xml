@@ -12,7 +12,6 @@
   <depend>geometry_msgs</depend>
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
-  <depend>rospy</depend>
   <depend>std_msgs</depend>
 
   <export>

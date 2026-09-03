@@ -67,6 +67,12 @@ flags, all stage timestamps, latency values and Acados timing/status fields.
 Failed solves are recorded with `solve_success=0` and NaN commands.  The
 bounded queue reports any dropped samples in `logger_dropped_samples`.
 
+The solver first uses its warm start.  If that solve fails, it immediately
+retries once from a cold start.  A second failure in the same callback holds
+the last valid command for at most 50 ms (when available); after three
+consecutive failed callbacks the node disables NMPC until
+`/nmpc/control_enabled` is set true again.
+
 The timing CSV remains available as a smaller file for latency analysis.  PX4
 must also record its normal `.ulg`; the two logs are joined after flight using
 the PX4 timestamp domain, while the local steady-clock columns are used only

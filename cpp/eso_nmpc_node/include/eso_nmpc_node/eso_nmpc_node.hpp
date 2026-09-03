@@ -94,6 +94,7 @@ public:
              int points, const Eigen::Vector3d & disturbance,
              Eigen::Matrix<double, kNu, 1> & command);
   void reset_warm_start();
+  bool warm_start_available() const;
   const Timing & last_timing() const;
 
 private:
@@ -253,6 +254,12 @@ private:
   bool have_odom_{false};
   bool eso_active_{false};
   std::atomic<bool> control_enabled_{true};
+  int max_consecutive_solve_failures_{3};
+  int consecutive_solve_failures_{0};
+  double fallback_hold_time_s_{0.05};
+  Eigen::Vector4d last_valid_command_{Eigen::Vector4d::Zero()};
+  double last_valid_command_time_s_{0.0};
+  bool last_valid_command_available_{false};
   double control_enable_time_s_{0.0};
   std::atomic<uint64_t> last_px4_timestamp_us_{0};
   uint64_t timestamp_epoch_us_{0};

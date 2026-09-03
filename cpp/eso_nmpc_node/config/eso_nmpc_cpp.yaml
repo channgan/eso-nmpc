@@ -3,11 +3,11 @@
     mass: 2.0643076923
     gravity: 9.80665
     rate_tau: 0.15
-    sample_time: 0.02
+    sample_time: 0.01
     horizon_steps: 30
     reference_timeout: 0.20
-    # RC-NMPC is selected only when Offboard is active and this AUX channel
-    # is high.  The RC reference is generated locally in this node.
+    # RC-NMPC is selected when this AUX channel is high.  The RC reference
+    # is generated locally in this node; flight-mode gating belongs to PX4.
     rc_timeout: 0.50
     rc_deadzone: 0.08
     # Set to the AUX channel selected in the airframe configuration.  0
@@ -42,6 +42,9 @@
     eso_innovation_limit: 0.5
     warm_start: true
     control_enabled_at_start: false
+    max_consecutive_solve_failures: 3
+    # Short bounded hold of the last valid command before PX4 offboard failsafe.
+    fallback_hold_time: 0.05
     # Continuous asynchronous flight logging.  Each node start creates
     # nmpc/logs/YYYYMMDD_HHMMSS_mmm/ below this root.  Set an absolute root on the
     # companion computer (for example /data/flight_logs) before a real flight.

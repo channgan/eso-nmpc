@@ -1,5 +1,4 @@
 eso_nmpc_ros1:
-  config_path: "$(find eso_nmpc_ros1)/../../config/nmpc.yaml"
   altitude: 1.0
   prestream_s: 1.5
   trajectory: "hover"
@@ -13,5 +12,5 @@ eso_nmpc_ros1:
   state_timeout_s: 1.0
   service_timeout_s: 8.0
   offboard_mode: "OFFBOARD"
-  log_root: "/home/ljt/nmpc_log"
+  log_root: "/home/cy2/nmpc_log"
   timing_log: ""

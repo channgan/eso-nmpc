@@ -1,14 +1,14 @@
 <launch>
-  <arg name="config_path" default="$(find eso_nmpc_ros1)/../../config/nmpc.yaml" />
-  <arg name="timing_log" default="" />
-  <arg name="log_root" default="/home/ljt/nmpc_log" />
-  <arg name="trajectory" default="hover" />
-
-  <rosparam command="load" file="$(find eso_nmpc_ros1)/config/params.yaml" />
-  <param name="/eso_nmpc_ros1/config_path" value="$(arg config_path)" />
-  <param name="/eso_nmpc_ros1/timing_log" value="$(arg timing_log)" />
-  <param name="/eso_nmpc_ros1/log_root" value="$(arg log_root)" />
-  <param name="/eso_nmpc_ros1/trajectory" value="$(arg trajectory)" />
-
-  <node pkg="eso_nmpc_ros1" type="eso_nmpc_node.py" name="eso_nmpc_ros1" output="screen" />
+  <!-- Native C++ controller entry point. The former Python controller is not
+       part of any active ROS1 launch file. -->
+  <arg name="auto_manage_flight" default="true" />
+  <arg name="shadow_mode" default="false" />
+  <arg name="rc_aux_channel" default="6" />
+  <arg name="timing_log_path" default="" />
+  <include file="$(find eso_nmpc_cpp)/launch/eso_nmpc_cpp.launch">
+    <arg name="auto_manage_flight" value="$(arg auto_manage_flight)" />
+    <arg name="shadow_mode" value="$(arg shadow_mode)" />
+    <arg name="rc_aux_channel" value="$(arg rc_aux_channel)" />
+  </include>
+  <param name="/eso_nmpc_cpp/timing_log_path" value="$(arg timing_log_path)" />
 </launch>

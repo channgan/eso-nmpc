@@ -47,7 +47,7 @@ class CppHoverSupervisor(Node):
         self.point_hold_duration = float(point_hold_duration)
         self.safety_drift_limit = safety_drift_limit
         self.points = 31
-        self.sample_time = 0.02
+        self.sample_time = 0.01
         self.ascent_duration = 4.0
         self.transition_duration = 3.0
         self.point_hold_duration = 4.0

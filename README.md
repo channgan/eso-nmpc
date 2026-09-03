@@ -127,9 +127,9 @@ HEADLESS=1 PX4_SIM_SPEED_FACTOR=0.5 make px4_sitl gz_x500
 
 ```bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export ACADOS_SOURCE_DIR=/home/cy/acados
+export ACADOS_SOURCE_DIR=/home/cy2/acados
 export LD_LIBRARY_PATH="$ACADOS_SOURCE_DIR/lib:$LD_LIBRARY_PATH"
-export PYTHONPATH=/home/cy/eso_nmpc:$PYTHONPATH
+export PYTHONPATH=/home/cy2/nmpc:$PYTHONPATH
 .venv/bin/python integration/px4_sitl_hover.py --altitude 1.0
 ```
 
@@ -267,7 +267,7 @@ group 的 heartbeat 定时器发布。当前节点复用 13 状态、4 输入、
 PX4 ROS 2 工作空间的 `src/eso_nmpc_node`，构建命令为：
 
 ```bash
-cd /home/cy/px4_ros2_ws
+cd /home/cy2/px4_ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 colcon build --packages-select eso_nmpc_node \
