@@ -1,5 +1,8 @@
 # eso_nmpc_node
 
+ROS1/ROS2 共用的接入、AUX6 参考源切换、故障保底和人工恢复规则见
+[`../../docs/NMPC使用逻辑与条件.md`](../../docs/NMPC使用逻辑与条件.md)。本文件只补充 ROS2 C++ 节点的通信和构建细节。
+
 This package is the C++ migration path for the controller. The internal hot
 path is a direct function call chain in one process:
 

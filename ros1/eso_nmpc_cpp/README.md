@@ -1,5 +1,8 @@
 # ROS1 C++ ESO-NMPC 适配层
 
+ROS1/ROS2 共用的接入、AUX6 参考源切换、故障保底和人工恢复规则见
+[`../../docs/NMPC使用逻辑与条件.md`](../../docs/NMPC使用逻辑与条件.md)。本文件只补充 ROS1 的话题、参数和启动方式。
+
 这是原生 ROS1 `roscpp` 版本，控制热路径为：
 
 ```text

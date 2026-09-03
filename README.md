@@ -36,6 +36,9 @@ simulation/trajectory_tracking_sim.py  平滑圆轨迹闭环跟踪与验收
 tests/benchmark_solver.py         mean/p99/p99.9/max benchmark
 ```
 
+统一的接入顺序、参考源切换、求解失败保底和人工恢复条件见
+[`docs/NMPC使用逻辑与条件.md`](docs/NMPC使用逻辑与条件.md)。ROS1/ROS2 除通信接口外均以该文档为共同运行契约。
+
 ## 先运行不依赖 acados 的检查
 
 ```bash
