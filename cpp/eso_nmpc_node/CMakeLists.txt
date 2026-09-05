@@ -32,12 +32,17 @@ if(NOT EXISTS "${ACADOS_SOURCE_DIR}/include/acados_c/ocp_nlp_interface.h")
     "Set ACADOS_SOURCE_DIR or pass -DACADOS_SOURCE_DIR=/path/to/acados.")
 endif()
 set(ACADOS_GENERATED_DIR "${ESO_NMPC_ROOT}/generated/quadrotor_nmpc" CACHE PATH "generated acados directory")
-set(ACADOS_HASH "e2d8d978" CACHE STRING "generated acados formulation hash")
-if(NOT ACADOS_HASH STREQUAL "e2d8d978")
+set(ACADOS_HASH "1c2d851e" CACHE STRING "generated acados formulation hash")
+if(NOT ACADOS_HASH MATCHES "^[0-9a-fA-F]+$")
   message(FATAL_ERROR
-    "This C++ node is compiled against the e2d8d978 generated solver symbols. "
-    "Update the generated header/symbol names in eso_nmpc_node.cpp before changing ACADOS_HASH.")
+    "ACADOS_HASH must contain only hexadecimal characters: '${ACADOS_HASH}'.")
 endif()
+string(TOUPPER "${ACADOS_HASH}" ACADOS_HASH_UPPER)
+set(ACADOS_CONFIG_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${ACADOS_CONFIG_DIR}")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/eso_nmpc_node/acados_solver_config.hpp.in"
+  "${ACADOS_CONFIG_DIR}/acados_solver_config.hpp" @ONLY)
 set(ACADOS_SOLVER_LIB "${ACADOS_GENERATED_DIR}/libacados_ocp_solver_ocp_quadrotor_nmpc_${ACADOS_HASH}.so")
 set(ACADOS_SOLVER_HEADER "${ACADOS_GENERATED_DIR}/acados_solver_ocp_quadrotor_nmpc_${ACADOS_HASH}.h")
 if(NOT EXISTS "${ACADOS_SOLVER_LIB}" OR NOT EXISTS "${ACADOS_SOLVER_HEADER}")
@@ -60,6 +65,7 @@ add_executable(${PROJECT_NAME}
 )
 target_include_directories(${PROJECT_NAME} PRIVATE
   include
+  "${ACADOS_CONFIG_DIR}"
   ${EIGEN3_INCLUDE_DIRS}
   "${ACADOS_GENERATED_DIR}"
   "${ACADOS_SOURCE_DIR}/include"

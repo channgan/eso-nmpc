@@ -1,0 +1,12 @@
+#pragma once
+
+#define ESO_NMPC_ACADOS_HASH @ACADOS_HASH@
+#define ESO_NMPC_ACADOS_HASH_UPPER @ACADOS_HASH_UPPER@
+#define ESO_NMPC_ACADOS_HEADER "acados_solver_ocp_quadrotor_nmpc_@ACADOS_HASH@.h"
+
+#define ESO_NMPC_CAT_IMPL(a, b) a##b
+#define ESO_NMPC_CAT(a, b) ESO_NMPC_CAT_IMPL(a, b)
+#define ESO_NMPC_SOLVER_SYMBOL_IMPL(hash, suffix) ocp_quadrotor_nmpc_##hash##suffix
+#define ESO_NMPC_SOLVER_SYMBOL(hash, suffix) ESO_NMPC_SOLVER_SYMBOL_IMPL(hash, suffix)
+#define ESO_NMPC_GENERATED_N \
+  ESO_NMPC_CAT(ESO_NMPC_CAT(OCP_QUADROTOR_NMPC_, ESO_NMPC_ACADOS_HASH_UPPER), _N)

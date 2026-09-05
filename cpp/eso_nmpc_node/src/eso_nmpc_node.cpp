@@ -16,7 +16,8 @@
 
 #include <acados_c/ocp_nlp_interface.h>
 #include <acados/utils/types.h>
-#include <acados_solver_ocp_quadrotor_nmpc_e2d8d978.h>
+#include "acados_solver_config.hpp"
+#include ESO_NMPC_ACADOS_HEADER
 
 using namespace std::chrono_literals;
 
@@ -25,7 +26,7 @@ namespace eso_nmpc_node
 
 namespace
 {
-constexpr int kGeneratedN = OCP_QUADROTOR_NMPC_E2D8D978_N;
+constexpr int kGeneratedN = ESO_NMPC_GENERATED_N;
 constexpr double kEpsilon = 1.0e-12;
 using State = Eigen::Matrix<double, kNx, 1>;
 using States = Eigen::Matrix<double, kNx, kMaxPoints>;
@@ -193,7 +194,7 @@ Eigen::Vector3d VelocityLeso::update(const Eigen::Vector3d & velocity,
 
 struct AcadosController::Impl
 {
-  using Capsule = ocp_quadrotor_nmpc_e2d8d978_solver_capsule;
+  using Capsule = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _solver_capsule);
   Capsule * capsule{nullptr};
   ocp_nlp_config * config{nullptr};
   ocp_nlp_dims * dims{nullptr};
@@ -202,7 +203,7 @@ struct AcadosController::Impl
   int n{kGeneratedN};
   double mass{0.0};
   double gravity{0.0};
-  double sample_time{0.02};
+  double sample_time{0.01};
   double thrust_min{0.0};
   double thrust_max{0.0};
   Eigen::Vector3d body_rate_max{Eigen::Vector3d::Ones()};
@@ -232,23 +233,24 @@ AcadosController::AcadosController(double mass, double gravity, double rate_tau,
   impl_->thrust_max = thrust_max;
   impl_->body_rate_max = body_rate_max;
   impl_->warm_start = warm_start;
-  impl_->capsule = ocp_quadrotor_nmpc_e2d8d978_acados_create_capsule();
+  impl_->capsule = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_create_capsule)();
+  std::vector<double> time_steps(kGeneratedN, sample_time);
   if (impl_->capsule == nullptr ||
-      ocp_quadrotor_nmpc_e2d8d978_acados_create_with_discretization(
-        impl_->capsule, kGeneratedN, nullptr) != ACADOS_SUCCESS) {
+      ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_create_with_discretization)(
+        impl_->capsule, kGeneratedN, time_steps.data()) != ACADOS_SUCCESS) {
     throw std::runtime_error("failed to create generated acados solver");
   }
-  impl_->config = ocp_quadrotor_nmpc_e2d8d978_acados_get_nlp_config(impl_->capsule);
-  impl_->dims = ocp_quadrotor_nmpc_e2d8d978_acados_get_nlp_dims(impl_->capsule);
-  impl_->in = ocp_quadrotor_nmpc_e2d8d978_acados_get_nlp_in(impl_->capsule);
-  impl_->out = ocp_quadrotor_nmpc_e2d8d978_acados_get_nlp_out(impl_->capsule);
+  impl_->config = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_get_nlp_config)(impl_->capsule);
+  impl_->dims = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_get_nlp_dims)(impl_->capsule);
+  impl_->in = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_get_nlp_in)(impl_->capsule);
+  impl_->out = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_get_nlp_out)(impl_->capsule);
 }
 
 AcadosController::~AcadosController()
 {
   if (impl_ && impl_->capsule) {
-    ocp_quadrotor_nmpc_e2d8d978_acados_free(impl_->capsule);
-    ocp_quadrotor_nmpc_e2d8d978_acados_free_capsule(impl_->capsule);
+    ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_free)(impl_->capsule);
+    ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_free_capsule)(impl_->capsule);
   }
 }
 
@@ -293,7 +295,7 @@ bool AcadosController::solve(const State & state, const States & reference_state
   for (int i = 0; i < kGeneratedN; ++i) {
     parameters[0] = disturbance[0]; parameters[1] = disturbance[1]; parameters[2] = disturbance[2];
     for (int j = 0; j < 4; ++j) parameters[3 + j] = reference_states(6 + j, i);
-    ocp_quadrotor_nmpc_e2d8d978_acados_update_params(impl_->capsule, i, parameters.data(), kNp);
+    ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_update_params)(impl_->capsule, i, parameters.data(), kNp);
     std::array<double, 13> yref{};
     for (int j = 0; j < 6; ++j) yref[j] = reference_states(j, i);
     for (int j = 0; j < 4; ++j) yref[9 + j] = feedforward(j, i);
@@ -301,7 +303,7 @@ bool AcadosController::solve(const State & state, const States & reference_state
   }
   parameters[0] = disturbance[0]; parameters[1] = disturbance[1]; parameters[2] = disturbance[2];
   for (int j = 0; j < 4; ++j) parameters[3 + j] = reference_states(6 + j, kGeneratedN);
-  ocp_quadrotor_nmpc_e2d8d978_acados_update_params(impl_->capsule, kGeneratedN, parameters.data(), kNp);
+  ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_update_params)(impl_->capsule, kGeneratedN, parameters.data(), kNp);
   std::array<double, 9> yref_terminal{};
   for (int j = 0; j < 6; ++j) yref_terminal[j] = reference_states(j, kGeneratedN);
   ocp_nlp_cost_model_set(impl_->config, impl_->dims, impl_->in, kGeneratedN, "yref", yref_terminal.data());
@@ -310,7 +312,7 @@ bool AcadosController::solve(const State & state, const States & reference_state
   impl_->timing.set_end_steady_s = std::chrono::duration<double>(
     solve_started.time_since_epoch()).count();
   impl_->timing.solve_0_steady_s = impl_->timing.set_end_steady_s;
-  const int status = ocp_quadrotor_nmpc_e2d8d978_acados_solve(impl_->capsule);
+  const int status = ESO_NMPC_SOLVER_SYMBOL(ESO_NMPC_ACADOS_HASH, _acados_solve)(impl_->capsule);
   const auto solve_finished = std::chrono::steady_clock::now();
   impl_->timing.solve_1_steady_s = std::chrono::duration<double>(
     solve_finished.time_since_epoch()).count();
@@ -370,15 +372,21 @@ EsoNmpcNode::EsoNmpcNode()
   mass_(declare_parameter("mass", 2.0643076923)),
   gravity_(declare_parameter("gravity", 9.80665)),
   rate_tau_(declare_parameter("rate_tau", 0.15)),
-  sample_time_(declare_parameter("sample_time", 0.02)),
+  sample_time_(declare_parameter("sample_time", 0.01)),
+  control_period_(declare_parameter("control_period", 0.01)),
+  enforce_reference_sample_time_(declare_parameter("enforce_reference_sample_time", true)),
   horizon_steps_(declare_parameter("horizon_steps", 30)),
   reference_timeout_s_(declare_parameter("reference_timeout", 0.20)),
   rc_timeout_s_(declare_parameter("rc_timeout", 0.50)),
+  odometry_timestamp_gap_threshold_s_(declare_parameter(
+    "odometry_timestamp_gap_threshold", 0.10)),
+  manual_control_topic_(declare_parameter(
+    "manual_control_topic", std::string("/fmu/out/manual_control_setpoint"))),
   rc_deadzone_(declare_parameter("rc_deadzone", 0.08)),
   // Zero disables RC source selection until an explicit AUX channel is
   // configured.  The channel is a deployment parameter, never a code-level
   // assumption about the transmitter mapping.
-  rc_aux_channel_(declare_parameter("rc_aux_channel", 0)),
+  rc_aux_channel_(declare_parameter("rc_aux_channel", 6)),
   rc_aux_enable_threshold_(declare_parameter("rc_aux_enable_threshold", 0.50)),
   rc_max_horizontal_speed_(declare_parameter("rc_max_horizontal_speed", 2.0)),
   rc_max_vertical_speed_up_(declare_parameter("rc_max_vertical_speed_up", 3.0)),
@@ -401,8 +409,10 @@ EsoNmpcNode::EsoNmpcNode()
     declare_parameter("body_rate_max_x", 1.0), declare_parameter("body_rate_max_y", 1.0),
     declare_parameter("body_rate_max_z", 1.0))),
   eso_enabled_(declare_parameter("eso_enabled", true)),
+  solve_enabled_(declare_parameter("solve_enabled", true)),
+  publish_rates_enabled_(declare_parameter("publish_rates_enabled", true)),
   eso_activation_delay_s_(declare_parameter("eso_activation_delay", 3.0)),
-  eso_(declare_parameter("eso_bandwidth", 3.0), declare_parameter("eso_clamp", 1.0),
+  eso_(declare_parameter("eso_bandwidth", 2.5), declare_parameter("eso_clamp", 1.0),
        declare_parameter("eso_innovation_limit", 0.5)),
   controller_(mass_, gravity_, rate_tau_, sample_time_, horizon_steps_, thrust_min_, thrust_max_,
               body_rate_max_, declare_parameter("warm_start", true))
@@ -424,7 +434,13 @@ EsoNmpcNode::EsoNmpcNode()
   if (flight_log_buffer_size_ == 0 || flight_log_flush_period_ms_ <= 0) {
     throw std::invalid_argument("flight logger buffer size and flush period must be positive");
   }
-  control_enabled_.store(declare_parameter("control_enabled_at_start", true));
+  if (!enforce_reference_sample_time_) {
+    RCLCPP_WARN(
+      get_logger(),
+      "reference sample-time validation is DISABLED for diagnostic use; "
+      "solver discretization remains %.6f s", sample_time_);
+  }
+  control_enabled_.store(declare_parameter("control_enabled_at_start", false));
   if (control_enabled_.load()) {
     control_enable_time_s_ = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -433,6 +449,10 @@ EsoNmpcNode::EsoNmpcNode()
   if (rc_aux_channel_ < 0 || rc_aux_channel_ > 6) {
     throw std::invalid_argument("rc_aux_channel must be in [0, 6] (0 disables RC)");
   }
+  if (!(odometry_timestamp_gap_threshold_s_ > 0.0) ||
+      !std::isfinite(odometry_timestamp_gap_threshold_s_)) {
+    throw std::invalid_argument("odometry timestamp gap threshold must be finite and positive");
+  }
   if (!(rc_timeout_s_ > 0.0) || !(rc_deadzone_ >= 0.0 && rc_deadzone_ < 1.0) ||
       !(rc_max_horizontal_speed_ > 0.0) || !(rc_max_vertical_speed_up_ > 0.0) ||
       !(rc_max_vertical_speed_down_ > 0.0) || !(rc_max_horizontal_acceleration_ > 0.0) ||
@@ -440,33 +460,59 @@ EsoNmpcNode::EsoNmpcNode()
       !(rc_hold_max_horizontal_speed_ > 0.0) || !(rc_hold_max_vertical_speed_ > 0.0)) {
     throw std::invalid_argument("invalid RC-NMPC limits or timeout");
   }
+  // VehicleOdometry is a high-rate best-effort stream.  Keep enough samples
+  // to absorb a short executor/DDS scheduling burst without losing the state
+  // chain; the controller still consumes only the newest delivered sample.
+  // Keep the PX4 sensor queue aligned with the known-good C++ baseline.  PX4's
+  // bare-DDS odometry publisher itself is KEEP_LAST(1); a larger ROS queue can
+  // preserve stale samples after a transport burst and worsen reordering.
   auto sensor_qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort();
-  auto input_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  // High-rate PX4 setpoints are latest-value data.  A reliable queue can
+  // build back-pressure in the uXRCE bridge when the C++ controller publishes
+  // at 100 Hz; dropping an old setpoint is safer than delaying it.
+  // PX4's input bridge and the previously verified C++ baseline use reliable
+  // delivery for control setpoints.  Keep the latest-value depth, but retain
+  // reliable delivery so a transient DDS burst cannot create a long PX4 gap.
+  auto px4_setpoint_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  // A horizon is a complete reference for the next control interval.  It is
+  // latest-value data: keep only the newest sample and let the C++ controller
+  // continue with its freshness guard if a transient DDS sample is dropped.
+  // Isolate its callback from the mutually-exclusive solve/state group.
   auto trajectory_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
-  // Solving is serialized in its own group. Heartbeat is in a separate
-  // reentrant group so a solve cannot starve PX4's Offboard watchdog.
+  // Keep state/control inputs serialized.  Trajectory reception is separate
+  // so a queued odometry/solve callback cannot starve reference updates.
   control_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  trajectory_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   heartbeat_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   rclcpp::SubscriptionOptions control_options;
   control_options.callback_group = control_callback_group_;
   rclcpp::SubscriptionOptions trajectory_options;
-  trajectory_options.callback_group = control_callback_group_;
+  trajectory_options.callback_group = trajectory_callback_group_;
+  rclcpp::SubscriptionOptions manual_options;
+  manual_options.callback_group = control_callback_group_;
   odometry_subscription_ = create_subscription<px4_msgs::msg::VehicleOdometry>(
     "/fmu/out/vehicle_odometry", sensor_qos,
     std::bind(&EsoNmpcNode::odometry_callback, this, std::placeholders::_1), control_options);
+  status_subscription_ = create_subscription<px4_msgs::msg::VehicleStatus>(
+    "/fmu/out/vehicle_status_v1", sensor_qos,
+    std::bind(&EsoNmpcNode::status_callback, this, std::placeholders::_1), control_options);
   trajectory_subscription_ = create_subscription<px4_msgs::msg::NmpcTrajectorySetpoint>(
     "/nmpc/in/trajectory_setpoint", trajectory_qos,
     std::bind(&EsoNmpcNode::trajectory_callback, this, std::placeholders::_1), trajectory_options);
   manual_control_subscription_ = create_subscription<px4_msgs::msg::ManualControlSetpoint>(
-    "/fmu/out/manual_control_setpoint", sensor_qos,
-    std::bind(&EsoNmpcNode::manual_control_callback, this, std::placeholders::_1), control_options);
+    manual_control_topic_, sensor_qos,
+    std::bind(&EsoNmpcNode::manual_control_callback, this, std::placeholders::_1), manual_options);
   enable_subscription_ = create_subscription<std_msgs::msg::Bool>(
     "/nmpc/control_enabled", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
     std::bind(&EsoNmpcNode::enable_callback, this, std::placeholders::_1), control_options);
   heartbeat_publisher_ = create_publisher<px4_msgs::msg::OffboardControlMode>(
-    "/fmu/in/offboard_control_mode", input_qos);
+    "/fmu/in/offboard_control_mode", px4_setpoint_qos);
+  rc_timeout_publisher_ = create_publisher<std_msgs::msg::Bool>(
+    "/nmpc/rc_timeout", rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+  odometry_timestamp_fault_publisher_ = create_publisher<std_msgs::msg::Bool>(
+    "/nmpc/odometry_timestamp_fault", rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
   rates_publisher_ = create_publisher<px4_msgs::msg::VehicleRatesSetpoint>(
-    "/fmu/in/vehicle_rates_setpoint", input_qos);
+    "/fmu/in/vehicle_rates_setpoint", px4_setpoint_qos);
   heartbeat_timer_ = create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(std::max(0.01, sample_time_))),
@@ -478,8 +524,10 @@ EsoNmpcNode::EsoNmpcNode()
   }
   RCLCPP_INFO(get_logger(), "flight logs: %s, timing: %s",
               flight_log_path_.c_str(), timing_log_path_.c_str());
-  RCLCPP_INFO(get_logger(), "C++ single-process ESO+Reference+Acados+Publish ready (N=%d, dt=%.3f)",
-              horizon_steps_, sample_time_);
+  publish_rc_timeout(false);
+  publish_odometry_timestamp_fault(false);
+  RCLCPP_INFO(get_logger(), "C++ single-process ESO+Reference+Acados+Publish ready (N=%d, mpc_dt=%.3f, control_period=%.3f)",
+              horizon_steps_, sample_time_, control_period_);
 }
 
 EsoNmpcNode::~EsoNmpcNode()
@@ -489,33 +537,54 @@ EsoNmpcNode::~EsoNmpcNode()
 
 void EsoNmpcNode::enable_callback(std_msgs::msg::Bool::ConstSharedPtr message)
 {
-  const bool previous = control_enabled_.exchange(message->data);
+  std::lock_guard<std::mutex> lock(mutex_);
+  const bool previous = control_enabled_.load();
   if (message->data && !previous) {
+    if (rc_timeout_fault_.load() || odometry_timestamp_fault_.load()) {
+      control_enabled_.store(false);
+      RCLCPP_WARN(
+        get_logger(),
+        "rejecting NMPC re-enable while a safety fault is latched; restart the node for recovery");
+      return;
+    }
+    control_enabled_.store(true);
     control_enable_time_s_ = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
     eso_active_ = false;
     last_disturbance_.setZero();
     last_command_thrust_ = mass_ * gravity_;
-    std::lock_guard<std::mutex> lock(mutex_);
     rc_mode_active_ = false;
     rc_hold_active_ = false;
     rc_neutral_latched_ = false;
+    rc_timeout_fault_.store(false);
+    odometry_timestamp_fault_.store(false);
+    last_odometry_receive_time_s_ = 0.0;
+    last_odometry_timestamp_ = 0;
+    publish_rc_timeout(false);
+    publish_odometry_timestamp_fault(false);
     RCLCPP_INFO(get_logger(), "NMPC control enabled; ESO activation delay started");
   } else if (!message->data && previous) {
+    control_enabled_.store(false);
     eso_active_ = false;
-    std::lock_guard<std::mutex> lock(mutex_);
     rc_mode_active_ = false;
     rc_hold_active_ = false;
     rc_neutral_latched_ = false;
-    controller_.reset_warm_start();
+    reset_controller_warm_start();
     RCLCPP_INFO(get_logger(), "NMPC control disabled");
   }
+}
+
+void EsoNmpcNode::status_callback(px4_msgs::msg::VehicleStatus::ConstSharedPtr message)
+{
+  vehicle_status_received_.store(true);
+  vehicle_armed_.store(message->arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED);
 }
 
 void EsoNmpcNode::trajectory_callback(px4_msgs::msg::NmpcTrajectorySetpoint::ConstSharedPtr message)
 {
   if (message->points != horizon_steps_ + 1 ||
-      std::abs(static_cast<double>(message->sample_time) - sample_time_) > 1.0e-4) {
+      (enforce_reference_sample_time_ &&
+       std::abs(static_cast<double>(message->sample_time) - sample_time_) > 1.0e-4)) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "rejecting trajectory: points=%u sample_time=%.6f", message->points, message->sample_time);
     return;
@@ -559,13 +628,20 @@ void EsoNmpcNode::manual_control_callback(
     std::chrono::steady_clock::now().time_since_epoch()).count();
   const double aux = aux_value(*message, rc_aux_channel_);
   const bool aux_enabled = std::isfinite(aux) && aux >= rc_aux_enable_threshold_;
-  const bool valid = message->valid &&
+  const bool source_rc = message->data_source == px4_msgs::msg::ManualControlSetpoint::SOURCE_RC;
+  const bool valid = source_rc && message->valid &&
     std::isfinite(message->roll) && std::isfinite(message->pitch) &&
     std::isfinite(message->yaw) && std::isfinite(message->throttle);
   std::lock_guard<std::mutex> lock(mutex_);
   rc_aux_enabled_ = aux_enabled;
   if (!valid) {
     manual_control_valid_ = false;
+    if (aux_enabled && !source_rc) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "AUX%d selected but ManualControlSetpoint source is not SOURCE_RC (%u)",
+        rc_aux_channel_, static_cast<unsigned int>(message->data_source));
+    }
     return;
   }
   rc_sticks_ = {message->roll, message->pitch, message->yaw, message->throttle};
@@ -573,18 +649,25 @@ void EsoNmpcNode::manual_control_callback(
   last_manual_receive_time_s_ = now;
 }
 
+void EsoNmpcNode::reset_controller_warm_start()
+{
+  std::lock_guard<std::mutex> lock(controller_mutex_);
+  controller_.reset_warm_start();
+}
+
 bool EsoNmpcNode::build_rc_trajectory(const Eigen::Vector3d & measured_position,
                                       const Eigen::Vector3d & measured_velocity,
                                       double measured_yaw, double dt,
                                       Trajectory & trajectory)
 {
+  // This function runs from the odometry callback while the heartbeat timer
+  // can concurrently run the RC timeout watchdog.  Keep the complete RC
+  // reference state transition under the same mutex as the watchdog so a
+  // timeout cannot race a reference update or warm-start reset.
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!(dt > 0.0) || !std::isfinite(dt)) dt = sample_time_;
   dt = std::clamp(dt, 1.0e-3, 0.1);
-  std::array<float, 4> sticks{};
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    sticks = rc_sticks_;
-  }
+  const std::array<float, 4> sticks = rc_sticks_;
   const double roll = apply_deadzone(sticks[0], rc_deadzone_);
   const double pitch = apply_deadzone(sticks[1], rc_deadzone_);
   const double yaw_stick = apply_deadzone(sticks[2], rc_deadzone_);
@@ -602,7 +685,7 @@ bool EsoNmpcNode::build_rc_trajectory(const Eigen::Vector3d & measured_position,
     rc_hold_active_ = false;
     rc_neutral_latched_ = sticks_neutral;
     rc_mode_active_ = true;
-    controller_.reset_warm_start();
+    reset_controller_warm_start();
     RCLCPP_INFO(get_logger(), "RC-NMPC reference enabled (AUX%d)", rc_aux_channel_);
   }
 
@@ -619,7 +702,7 @@ bool EsoNmpcNode::build_rc_trajectory(const Eigen::Vector3d & measured_position,
       rc_reference_yaw_ = measured_yaw;
       rc_reference_yaw_rate_ = 0.0;
       rc_neutral_latched_ = false;
-      controller_.reset_warm_start();
+      reset_controller_warm_start();
     }
     const double cosine = std::cos(rc_reference_yaw_);
     const double sine = std::sin(rc_reference_yaw_);
@@ -677,7 +760,7 @@ bool EsoNmpcNode::build_rc_trajectory(const Eigen::Vector3d & measured_position,
       rc_reference_yaw_rate_ = 0.0;
       rc_neutral_latched_ = true;
       acceleration.setZero();
-      controller_.reset_warm_start();
+      reset_controller_warm_start();
       RCLCPP_INFO(get_logger(), "RC velocity stopped; latched position hold");
     }
   }
@@ -724,6 +807,70 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
   uint64_t previous_px4 = last_px4_timestamp_us_.load();
   while (previous_px4 < message->timestamp &&
          !last_px4_timestamp_us_.compare_exchange_weak(previous_px4, message->timestamp)) {}
+
+  // PX4's timestamp fields are useful diagnostics, but they are not a safe
+  // transport clock here: a DDS-delivered sample can arrive out of order, and
+  // PX4 time synchronisation can change the timestamp epoch.  Use the local
+  // monotonic receive clock for the safety gate and controller step instead.
+  const uint64_t odometry_timestamp = message->timestamp;
+  const uint64_t previous_odometry_timestamp = last_odometry_timestamp_;
+  const double previous_odometry_receive_time_s = last_odometry_receive_time_s_;
+  if (odometry_timestamp == 0) {
+    ++odometry_timestamp_reorder_count_;
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "rejecting odometry with zero PX4 timestamp; waiting for a valid sample");
+    return;
+  }
+  if (previous_odometry_timestamp > 0 && odometry_timestamp <= previous_odometry_timestamp) {
+    ++odometry_timestamp_reorder_count_;
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "out-of-order odometry timestamp %llu after %llu; accepting sample and using receive clock",
+      static_cast<unsigned long long>(odometry_timestamp),
+      static_cast<unsigned long long>(previous_odometry_timestamp));
+  }
+  const double receive_step_s = previous_odometry_receive_time_s > 0.0 ?
+    receive_time - previous_odometry_receive_time_s : sample_time_;
+  if (!(receive_step_s > 0.0) || receive_step_s > odometry_timestamp_gap_threshold_s_) {
+    // During prestream/arming, the vehicle is not airborne yet.  A DDS
+    // participant may still be discovering or resynchronizing, so establish
+    // a fresh receive baseline without latching an in-flight fault.  Once
+    // PX4 reports ARMED, the same 0.10 s gate is strict.
+    const double control_age_s = control_enable_time_s_ > 0.0 ?
+      receive_time - control_enable_time_s_ : 0.0;
+    const bool preflight_resync_window =
+      !vehicle_armed_.load() &&
+      control_age_s < 5.0;
+    if (preflight_resync_window) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "pre-flight odometry receive gap %.3f s; re-baselining before arming",
+        receive_step_s);
+    } else {
+      ++odometry_timestamp_gap_count_;
+      reset_controller_warm_start();
+      eso_active_ = false;
+      last_disturbance_.setZero();
+      control_enabled_.store(false);
+      if (!odometry_timestamp_fault_.exchange(true)) {
+        publish_odometry_timestamp_fault(true);
+        RCLCPP_ERROR(
+          get_logger(),
+          "odometry receive gap %.3f s (threshold %.3f s); NMPC output latched off",
+          receive_step_s,
+          odometry_timestamp_gap_threshold_s_);
+      }
+      return;
+    }
+  }
+  // This watchdog is updated for every valid odometry sample, even when the
+  // external trajectory is stale.  A trajectory DDS pause must not be
+  // misclassified as an odometry transport gap.
+  last_odometry_receive_time_s_ = receive_time;
+  last_odometry_timestamp_ = std::max(previous_odometry_timestamp, odometry_timestamp);
+  const double dt = std::clamp(receive_step_s, 0.001, odometry_timestamp_gap_threshold_s_);
+
   Trajectory trajectory;
   bool use_rc_reference = false;
   bool rc_input_fresh = false;
@@ -731,10 +878,8 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
     std::lock_guard<std::mutex> lock(mutex_);
     rc_input_fresh = manual_control_valid_ &&
       (receive_time - last_manual_receive_time_s_ <= rc_timeout_s_);
-    // AUX selects the reference source.  Once RC-NMPC has been selected, a
-    // brief RC timeout keeps a zero-stick hold reference alive; it never
-    // continues integrating the last non-zero stick command.
-    use_rc_reference = rc_aux_enabled_ && (rc_input_fresh || rc_mode_active_);
+    if (rc_timeout_fault_.load()) return;
+    use_rc_reference = rc_aux_enabled_ && rc_input_fresh;
     if (rc_aux_enabled_ && !use_rc_reference) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                            "RC-NMPC selected but no valid ManualControlSetpoint");
@@ -743,15 +888,6 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
     if (!use_rc_reference && (!trajectory_valid_ ||
       receive_time - last_receive_time_s_ > reference_timeout_s_)) return;
     if (!use_rc_reference) trajectory = trajectory_;
-    if (use_rc_reference && !rc_input_fresh) {
-      rc_sticks_ = {0.0F, 0.0F, 0.0F, 0.0F};
-      if (!rc_hold_active_) {
-        rc_hold_active_ = true;
-        RCLCPP_WARN(get_logger(), "RC input timeout; holding current NMPC reference");
-      }
-    } else if (use_rc_reference) {
-      rc_hold_active_ = false;
-    }
   }
   const auto timing_state_start = std::chrono::steady_clock::now();
   State state;
@@ -770,10 +906,6 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
   const double sample_age_ms = sample_age_valid ?
     1.0e-3 * static_cast<double>(message->timestamp - sample) : 0.0;
   if (!sample_age_valid) ++timestamp_sample_age_invalid_count_;
-  double dt = sample_time_;
-  if (last_timestamp_sample_ > 0 && sample > last_timestamp_sample_) dt = 1.0e-6 * (sample - last_timestamp_sample_);
-  last_timestamp_sample_ = sample;
-
   Eigen::Vector3d disturbance = last_disturbance_;
   if (eso_enabled_) {
     const Eigen::Matrix3d rotation = quaternion_to_rotation(q);
@@ -805,7 +937,7 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
     if (rc_mode_active_) {
       rc_mode_active_ = false;
       rc_hold_active_ = false;
-      controller_.reset_warm_start();
+      reset_controller_warm_start();
       RCLCPP_INFO(get_logger(), "RC-NMPC reference disabled; external trajectory selected");
     }
   }
@@ -813,8 +945,10 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
   Controls controls = Controls::Zero();
   if (!build_reference(trajectory, q, disturbance, references, controls)) return;
   const auto timing_reference = std::chrono::steady_clock::now();
+  if (!solve_enabled_) return;
   Eigen::Matrix<double, kNu, 1> command;
   command.setConstant(std::numeric_limits<double>::quiet_NaN());
+  AcadosController::Timing solver_timing{};
   const auto seconds = [](const std::chrono::steady_clock::time_point & value) {
     return value == std::chrono::steady_clock::time_point{} ? 0.0 :
       std::chrono::duration<double>(value.time_since_epoch()).count();
@@ -853,7 +987,7 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
       1.0e3 * std::chrono::duration<double>(timing_pub - timing_rx).count();
     timing.eso_ms = timing.disturbance_estimation_ms;
     timing.reference_ms = 1.0e3 * std::chrono::duration<double>(timing_reference - timing_eso).count();
-    timing.solver = controller_.last_timing();
+    timing.solver = solver_timing;
 
     FlightLogRecord log;
     log.px4_timestamp_us = message->timestamp;
@@ -883,15 +1017,24 @@ void EsoNmpcNode::odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedP
     log.timing = timing;
     enqueue_flight_log(std::move(log));
   };
-  if (!controller_.solve(state, references, controls, trajectory.points, disturbance, command)) {
+  bool solve_success = false;
+  {
+    std::lock_guard<std::mutex> lock(controller_mutex_);
+    solve_success = controller_.solve(
+      state, references, controls, trajectory.points, disturbance, command);
+    solver_timing = controller_.last_timing();
+  }
+  if (!solve_success) {
     enqueue_record(false, std::chrono::steady_clock::time_point{}, std::chrono::steady_clock::time_point{});
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "acados solve failed; keeping heartbeat only");
     return;
   }
+  // A watchdog may have latched the output off while this solve was running.
+  // Never publish a command after that latch, even if the solve ended well.
+  if (!control_enabled_.load() || rc_timeout_fault_.load()) return;
   last_command_thrust_ = command[0];
   const auto timing_pub_start = std::chrono::steady_clock::now();
   publish_rates(command);
-  publish_heartbeat();
   const auto timing_pub = std::chrono::steady_clock::now();
   enqueue_record(true, timing_pub_start, timing_pub);
 }
@@ -943,7 +1086,43 @@ bool EsoNmpcNode::build_reference(const Trajectory & trajectory, const Eigen::Ve
   return true;
 }
 
-void EsoNmpcNode::heartbeat_callback() { publish_heartbeat(); }
+void EsoNmpcNode::rc_timeout_watchdog()
+{
+  const double now = std::chrono::duration<double>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  bool timeout_event = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool input_fresh = manual_control_valid_ &&
+      (now - last_manual_receive_time_s_ <= rc_timeout_s_);
+    // AUX selection is the operator's request to use RC-NMPC.  The timeout
+    // must be armed even when no valid RC frame has ever activated the local
+    // reference, otherwise selecting AUX6 with a missing/wrong source would
+    // leave the controller silently waiting forever.
+    if (control_enabled_.load() && rc_aux_enabled_ && !input_fresh &&
+        !rc_timeout_fault_.exchange(true)) {
+      control_enabled_.store(false);
+      rc_mode_active_ = false;
+      rc_hold_active_ = false;
+      rc_neutral_latched_ = false;
+      timeout_event = true;
+    }
+  }
+  if (timeout_event) {
+    // A latched NMPC fault must not leave a stale prediction in Acados.  The
+    // controller lock serializes this reset with any solve already in flight.
+    reset_controller_warm_start();
+    publish_rc_timeout(true);
+    RCLCPP_ERROR(get_logger(),
+                 "RC input timeout; NMPC output latched off, awaiting external PX4 fallback");
+  }
+}
+
+void EsoNmpcNode::heartbeat_callback()
+{
+  rc_timeout_watchdog();
+  publish_heartbeat();
+}
 
 void EsoNmpcNode::publish_heartbeat()
 {
@@ -955,8 +1134,25 @@ void EsoNmpcNode::publish_heartbeat()
   heartbeat_publisher_->publish(message);
 }
 
+void EsoNmpcNode::publish_rc_timeout(bool active)
+{
+  if (!rc_timeout_publisher_) return;
+  std_msgs::msg::Bool message;
+  message.data = active;
+  rc_timeout_publisher_->publish(message);
+}
+
+void EsoNmpcNode::publish_odometry_timestamp_fault(bool active)
+{
+  if (!odometry_timestamp_fault_publisher_) return;
+  std_msgs::msg::Bool message;
+  message.data = active;
+  odometry_timestamp_fault_publisher_->publish(message);
+}
+
 void EsoNmpcNode::publish_rates(const Eigen::Matrix<double, kNu, 1> & command)
 {
+  if (!publish_rates_enabled_) return;
   px4_msgs::msg::VehicleRatesSetpoint message;
   message.timestamp = px4_timestamp_us();
   message.roll = static_cast<float>(command[1]);

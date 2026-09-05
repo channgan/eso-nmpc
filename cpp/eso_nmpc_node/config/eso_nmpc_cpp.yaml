@@ -3,16 +3,23 @@
     mass: 2.0643076923
     gravity: 9.80665
     rate_tau: 0.15
-    sample_time: 0.02
+    sample_time: 0.01
+    control_period: 0.01
+    # Keep enabled: external trajectories must match the generated solver grid.
+    # The regression runner has an explicit diagnostic-only bypass for mismatch tests.
+    enforce_reference_sample_time: true
     horizon_steps: 30
     reference_timeout: 0.20
+    # A PX4 odometry sample gap beyond this limit is treated as a state-chain
+    # fault.  The node stops NMPC output and waits for explicit re-enable.
+    odometry_timestamp_gap_threshold: 0.10
     # RC-NMPC is selected only when Offboard is active and this AUX channel
     # is high.  The RC reference is generated locally in this node.
     rc_timeout: 0.50
+    manual_control_topic: /fmu/out/manual_control_setpoint
     rc_deadzone: 0.08
-    # Set to the AUX channel selected in the airframe configuration.  0
-    # disables RC-NMPC selection until explicitly configured.
-    rc_aux_channel: 0
+    # AUX6 selects RC-NMPC when high; leave it low for external-trajectory use.
+    rc_aux_channel: 6
     rc_aux_enable_threshold: 0.50
     rc_max_horizontal_speed: 2.0
     rc_max_vertical_speed_up: 3.0
@@ -37,7 +44,7 @@
     throttle_max: 1.0
     eso_enabled: true
     eso_activation_delay: 3.0
-    eso_bandwidth: 3.0
+    eso_bandwidth: 2.5
     eso_clamp: 1.0
     eso_innovation_limit: 0.5
     warm_start: true

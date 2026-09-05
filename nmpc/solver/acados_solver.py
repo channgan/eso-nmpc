@@ -158,7 +158,10 @@ def generate_solver(config: NmpcConfig, build: bool = True) -> Any:
         # Calling the constructor with build=False can intentionally switch build
         # back on when no reusable artifacts exist. The static generator is the
         # unambiguous generate-only API.
-        AcadosOcpSolver.generate(ocp, json_file=str(json_path))
+        # Recent acados_template takes the JSON basename from
+        # ``ocp.code_gen_options.json_file`` and no longer accepts a
+        # ``json_file`` keyword here.
+        AcadosOcpSolver.generate(ocp)
         return None
     return AcadosOcpSolver(
         ocp,

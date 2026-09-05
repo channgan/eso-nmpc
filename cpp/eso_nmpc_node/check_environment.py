@@ -149,8 +149,8 @@ def main() -> int:
         checker.fail(f"BLASFEO library missing under {acados / 'lib'}")
 
     generated = root / "generated/quadrotor_nmpc"
-    _existing_file(checker, generated / "acados_solver_ocp_quadrotor_nmpc_e2d8d978.h", "generated solver header")
-    _existing_file(checker, generated / "libacados_ocp_solver_ocp_quadrotor_nmpc_e2d8d978.so", "generated solver library")
+    _existing_file(checker, generated / "acados_solver_ocp_quadrotor_nmpc_1c2d851e.h", "generated solver header")
+    _existing_file(checker, generated / "libacados_ocp_solver_ocp_quadrotor_nmpc_1c2d851e.so", "generated solver library")
     checker.python_module("numpy", required=False)
     checker.python_module("yaml", required=False)
     checker.python_module("casadi", required=args.require_generator)

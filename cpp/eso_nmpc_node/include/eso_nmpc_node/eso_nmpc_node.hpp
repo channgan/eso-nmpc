@@ -21,6 +21,7 @@
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_msgs/msg/vehicle_rates_setpoint.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
 #include <std_msgs/msg/bool.hpp>
 
 namespace eso_nmpc_node
@@ -111,7 +112,9 @@ private:
   void trajectory_callback(px4_msgs::msg::NmpcTrajectorySetpoint::ConstSharedPtr message);
   void manual_control_callback(px4_msgs::msg::ManualControlSetpoint::ConstSharedPtr message);
   void enable_callback(std_msgs::msg::Bool::ConstSharedPtr message);
+  void status_callback(px4_msgs::msg::VehicleStatus::ConstSharedPtr message);
   void odometry_callback(px4_msgs::msg::VehicleOdometry::ConstSharedPtr message);
+  void rc_timeout_watchdog();
   void heartbeat_callback();
   bool build_reference(const Trajectory & trajectory, const Eigen::Vector4d & anchor,
                        const Eigen::Vector3d & disturbance,
@@ -120,7 +123,10 @@ private:
   bool build_rc_trajectory(const Eigen::Vector3d & measured_position,
                            const Eigen::Vector3d & measured_velocity,
                            double measured_yaw, double dt, Trajectory & trajectory);
+  void reset_controller_warm_start();
   void publish_heartbeat();
+  void publish_rc_timeout(bool active);
+  void publish_odometry_timestamp_fault(bool active);
   void publish_rates(const Eigen::Matrix<double, kNu, 1> & command);
   uint64_t px4_timestamp_us();
 
@@ -190,9 +196,13 @@ private:
   double gravity_;
   double rate_tau_;
   double sample_time_;
+  double control_period_;
+  bool enforce_reference_sample_time_;
   int horizon_steps_;
   double reference_timeout_s_;
   double rc_timeout_s_;
+  double odometry_timestamp_gap_threshold_s_;
+  std::string manual_control_topic_;
   double rc_deadzone_;
   int rc_aux_channel_;
   double rc_aux_enable_threshold_;
@@ -215,21 +225,32 @@ private:
   double throttle_max_;
   Eigen::Vector3d body_rate_max_;
   bool eso_enabled_;
+  bool solve_enabled_{true};
+  bool publish_rates_enabled_{true};
   double eso_activation_delay_s_;
   VelocityLeso eso_;
   AcadosController controller_;
 
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_subscription_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr status_subscription_;
   rclcpp::Subscription<px4_msgs::msg::NmpcTrajectorySetpoint>::SharedPtr trajectory_subscription_;
   rclcpp::Subscription<px4_msgs::msg::ManualControlSetpoint>::SharedPtr manual_control_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_subscription_;
   rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr heartbeat_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr rc_timeout_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr odometry_timestamp_fault_publisher_;
   rclcpp::Publisher<px4_msgs::msg::VehicleRatesSetpoint>::SharedPtr rates_publisher_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;
   rclcpp::CallbackGroup::SharedPtr control_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr trajectory_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr manual_callback_group_;
   rclcpp::CallbackGroup::SharedPtr heartbeat_callback_group_;
 
   std::mutex mutex_;
+  // The heartbeat watchdog may run concurrently with the odometry callback.
+  // Protect Acados mutable state separately so a safety reset never races a
+  // solve, while keeping the heartbeat callback independent of the RC state lock.
+  std::mutex controller_mutex_;
   Trajectory trajectory_{};
   bool trajectory_valid_{false};
   bool manual_control_valid_{false};
@@ -247,16 +268,23 @@ private:
   Eigen::Vector4d reference_anchor_{1.0, 0.0, 0.0, 0.0};
   Eigen::Vector3d last_disturbance_{Eigen::Vector3d::Zero()};
   double last_receive_time_s_{0.0};  // CLOCK_MONOTONIC seconds
-  uint64_t last_timestamp_sample_{0};
+  double last_odometry_receive_time_s_{0.0};  // CLOCK_MONOTONIC seconds
+  uint64_t last_odometry_timestamp_{0};  // PX4 timestamp, diagnostic only
   uint64_t timestamp_sample_age_invalid_count_{0};
   double last_command_thrust_{0.0};
   bool have_odom_{false};
   bool eso_active_{false};
   std::atomic<bool> control_enabled_{true};
+  std::atomic<bool> rc_timeout_fault_{false};
+  std::atomic<bool> odometry_timestamp_fault_{false};
+  std::atomic<bool> vehicle_status_received_{false};
+  std::atomic<bool> vehicle_armed_{false};
   double control_enable_time_s_{0.0};
   std::atomic<uint64_t> last_px4_timestamp_us_{0};
   uint64_t timestamp_epoch_us_{0};
   std::chrono::steady_clock::time_point timestamp_monotonic_origin_{};
+  uint64_t odometry_timestamp_gap_count_{0};
+  uint64_t odometry_timestamp_reorder_count_{0};
   std::string flight_log_root_;
   std::string flight_log_path_;
   std::string timing_log_path_;

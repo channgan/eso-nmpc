@@ -17,8 +17,8 @@ model:
   rate_tau: 0.15             # s
 
 controller:
-  sample_time: 0.02          # s, NMPC prediction/reference discretization
-  control_period: 0.02       # s, nominal elapsed-step/heartbeat base; output is odometry-event driven
+  sample_time: 0.01          # s, NMPC prediction/reference discretization
+  control_period: 0.01       # s, 100 Hz control/heartbeat period; output is odometry-event driven
   horizon_steps: 30
   reference_timeout: 0.20    # s, maximum accepted PX4 trajectory/interface age
   qp_solver_cond_N: 5
@@ -28,7 +28,7 @@ controller:
   # Shift the previous optimal state, control, and dynamics-multiplier
   # trajectories forward by one stage. Failed solves automatically fall back
   # to the current reference trajectory and zero multipliers.
-  warm_start: true        # use warm start; reset conditionally on timing/reference faults
+  warm_start: true        # shifted warm start
 
 # Each residual is divided by its engineering scale before it is squared.
 # Therefore every term below is dimensionless and has the same unit cost when
@@ -38,7 +38,9 @@ cost_scales:
   # Uniformly multiply every Q/R term; 0.7 means all weights are 30% lower
   # while preserving the relative weighting and the engineering scales below.
   weight_factor: 0.7
-  # Vertical position error is weighted twice as strongly as horizontal error.
+  # Original baseline position cost: with weight_factor=0.7 this gives
+  # Q_position=[70,70,140]. Vertical position remains weighted twice as strongly
+  # as horizontal error.
   position_error_m: [0.1, 0.1, 0.0707106781]
   velocity_error_m_s: [0.1, 0.1, 0.1]
   # SO(3) logarithmic attitude error [roll, pitch, yaw].
@@ -103,7 +105,7 @@ eso:
   # the estimate is used consistently by inverse-dynamics feed-forward and
   # the NMPC prediction model.
   enabled: true
-  bandwidth_rad_s: 3.0              # selected baseline for noisy hover/small-wind tests
+  bandwidth_rad_s: 2.5              # selected baseline for noisy hover/small-wind tests
   disturbance_clamp_m_s2: 1.0       # world-frame estimate limit
   activation_delay_s: 3.0           # allow takeoff/odometry to settle
   innovation_limit_m_s: 0.5         # protects against stale/jump samples

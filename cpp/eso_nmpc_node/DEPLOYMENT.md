@@ -67,9 +67,9 @@ pip install -e "$ACADOS_SOURCE_DIR/interfaces/acados_template"
 python3 solver/generate_solver.py
 ```
 
-The current C++ node expects the generated `e2d8d978` symbols.  If the
-formulation changes, update the generated symbol names in the C++ source and
-the CMake hash together.
+The current C++ node expects the generated `1c2d851e` symbols for the 0.01 s
+discretization. If the formulation changes, regenerate the solver and update
+the CMake hash together before rebuilding the node.
 
 ## 4. Build on the Orin
 
@@ -108,7 +108,11 @@ source ~/px4_ros2_ws/install/setup.bash
 MicroXRCEAgent udp4 -p 8888
 ```
 
-Start the node with a persistent writable log root.  A timestamped directory
+Start the C++ node before the flight and keep this process alive for the whole
+flight session.  Python may start and supervise the surrounding PX4/Gazebo/
+DDS processes and the handoff sequence, but it does not replace this C++ node.
+Arming is performed during the initial PX4 takeoff; an airborne handoff does
+not arm again.  Start the node with a persistent writable log root.  A timestamped directory
 is created for each node/flight session:
 
 ```bash

@@ -178,7 +178,7 @@ def load_config(path: str | Path = "config/nmpc.yaml") -> NmpcConfig:
     manual_control = ManualControlConfig(**raw["manual_control"])
     eso = EsoConfig(**raw.get("eso", {
         "enabled": False,
-        "bandwidth_rad_s": 3.0,
+        "bandwidth_rad_s": 2.5,
         "disturbance_clamp_m_s2": 1.0,
         "activation_delay_s": 1.0,
         "innovation_limit_m_s": 1.0,
@@ -197,8 +197,8 @@ def _validate(config: NmpcConfig) -> None:
         raise ValueError("sample_time must be positive")
     if config.controller.control_period <= 0.0:
         raise ValueError("control_period must be positive")
-    if config.controller.control_period < config.controller.sample_time:
-        raise ValueError("control_period must be at least sample_time")
+    # The current baseline runs both the 100 Hz control loop and the MPC/
+    # trajectory grid at sample_time=0.01 s.
     if config.controller.horizon_steps < 2:
         raise ValueError("horizon_steps must be at least 2")
     if config.controller.reference_timeout <= config.controller.sample_time:
