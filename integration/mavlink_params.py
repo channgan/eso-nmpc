@@ -16,12 +16,14 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from math import isclose
 from typing import Any
 
 DEFAULT_CONNECTION_STRING = "udpout:127.0.0.1:14580"
 HEARTBEAT_TIMEOUT_S = 10.0
 PARAM_SET_TIMEOUT_S = 2.0
 PARAM_SET_RETRIES = 3
+PARAM_VALUE_ABS_TOLERANCE = 1.0e-6
 
 # PX4 rejects a REAL32 PARAM_SET for enum/bitmask parameters even when the
 # requested numeric value is integral. Keep this list explicit because the
@@ -149,8 +151,17 @@ class ParamGuard:
             heartbeat = self._connection.recv_match(
                 type="HEARTBEAT", blocking=True, timeout=1.0
             )
-            if heartbeat is not None:
+            if heartbeat is not None and (
+                heartbeat.get_srcSystem() not in (0, 255)
+                and heartbeat.autopilot
+                != mavutil.mavlink.MAV_AUTOPILOT_INVALID
+            ):
                 break
+            # udpout can deliver the heartbeat we just sent as a local GCS
+            # packet (system 255, MAV_AUTOPILOT_INVALID).  It is not PX4 and
+            # must never become the parameter target; keep waiting for the
+            # vehicle heartbeat instead.
+            heartbeat = None
         if heartbeat is None:
             self._close()
             raise ParamGuardError(
@@ -204,7 +215,11 @@ class ParamGuard:
                 float(value),
                 parameter_type,
             )
-            if self._read(name) == value:
+            if isclose(
+                self._read(name), value,
+                rel_tol=PARAM_VALUE_ABS_TOLERANCE,
+                abs_tol=PARAM_VALUE_ABS_TOLERANCE,
+            ):
                 return
         raise ParamGuardError(f"parameter {name} still differs after {PARAM_SET_RETRIES} sets")
 
@@ -214,7 +229,11 @@ class ParamGuard:
         for parameter in self.parameters:
             original = self._read(parameter.name)
             self._originals[parameter.name] = original
-            if original == parameter.value:
+            if isclose(
+                original, parameter.value,
+                rel_tol=PARAM_VALUE_ABS_TOLERANCE,
+                abs_tol=PARAM_VALUE_ABS_TOLERANCE,
+            ):
                 print(
                     f"ParamGuard: {parameter.name} already {original:g} "
                     f"({parameter.note})", flush=True

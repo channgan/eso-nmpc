@@ -8,6 +8,7 @@ import csv
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -20,10 +21,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from integration.mavlink_params import DEFAULT_PARAMETERS, ParamGuard, ParamGuardError
 from integration.run_cpp_regression import (
+    DEFAULT_LOG_ROOT,
     DEFAULT_NODE,
     DEFAULT_PARAMS,
     DEFAULT_RMW_IMPLEMENTATION,
     DEFAULT_ROS_SETUP_SCRIPTS,
+    SOLVER_HASH,
     _latest_ulog,
     _terminate,
     _timing_summary,
@@ -35,11 +38,14 @@ from integration.run_cpp_regression import (
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-directory", type=Path)
+    parser.add_argument("--log-directory", type=Path, default=DEFAULT_LOG_ROOT,
+                        help="临时节点/注入器/监督器/ULog 目录")
     parser.add_argument("--node-executable", type=Path, default=DEFAULT_NODE)
     parser.add_argument("--params-file", type=Path, default=DEFAULT_PARAMS)
     parser.add_argument("--acados-source-dir", type=Path,
                         default=Path(os.environ.get("ACADOS_SOURCE_DIR", Path.home() / "acados")))
-    parser.add_argument("--rc-aux-channel", type=int, default=1)
+    parser.add_argument("--rc-aux-channel", type=int, default=6,
+                        help="C++ node/injector AUX channel; default matches deployment AUX6")
     parser.add_argument("--drop-after", type=float, default=-1.0)
     parser.add_argument("--case-timeout", type=float, default=180.0)
     parser.add_argument("--ros-setup-scripts", action="append", type=Path)
@@ -82,9 +88,13 @@ def main() -> int:
     output = (args.output_directory or PROJECT_ROOT / "background/sitl_regression_cpp" /
               f"rc_injection_{run_id}").resolve()
     output.mkdir(parents=True, exist_ok=True)
-    node_log = output / "cpp_node.log"
-    injector_log = output / "rc_injector.log"
-    supervisor_log = output / "supervisor.log"
+    params_snapshot = output / "cpp_params.yaml"
+    shutil.copy2(params, params_snapshot)
+    log_directory = args.log_directory.expanduser().resolve() / output.name
+    log_directory.mkdir(parents=True, exist_ok=True)
+    node_log = log_directory / "cpp_node.log"
+    injector_log = log_directory / "rc_injector.log"
+    supervisor_log = log_directory / "supervisor.log"
     flight_log = output / "nmpc_flight.csv"
     timing_log = output / "nmpc_timing.csv"
     px4_log_root = PROJECT_ROOT.parent / "apx"
@@ -93,6 +103,7 @@ def main() -> int:
         "-p", f"flight_log_path:={flight_log}",
         "-p", f"timing_log_path:={timing_log}",
         "-p", f"rc_aux_channel:={args.rc_aux_channel}",
+        "-p", "manual_control_topic:=/nmpc/test/manual_control_setpoint",
         "-p", "control_enabled_at_start:=false",
     ]
     supervisor_cmd = [
@@ -100,7 +111,13 @@ def main() -> int:
         "--trajectory", "hover", "--output-directory", str(output), "--skip-params",
         "--safety-drift-limit", "5.0",
     ]
-    injector_cmd = [sys.executable, str(PROJECT_ROOT / "integration/inject_rc_sitl.py")]
+    if args.drop_after >= 0.0:
+        supervisor_cmd.append("--expect-rc-timeout-fallback")
+    injector_cmd = [
+        sys.executable, str(PROJECT_ROOT / "integration/inject_rc_sitl.py"),
+        "--aux-channel", str(args.rc_aux_channel),
+        "--topic", "/nmpc/test/manual_control_setpoint",
+    ]
     if args.drop_after >= 0.0:
         injector_cmd += ["--drop-after", str(args.drop_after)]
     started_at = time.time()
@@ -138,14 +155,26 @@ def main() -> int:
             if supervisor_result is None:
                 result = {"success": False, "reason": "missing CPP_NMPC_SITL_RESULT"}
             else:
+                supervisor_reason = supervisor_result.get("reason", "unknown")
+                supervisor_safe_complete = bool(
+                    supervisor_result.get("landed_disarmed", False) and
+                    supervisor_reason == "trajectory completed"
+                )
                 result = {
-                    "success": bool(
-                        supervisor_result.get("landed_disarmed", False)
-                        and not str(supervisor_result.get("reason", "")).startswith("flight safety")
-                    ),
-                    "reason": supervisor_result.get("reason", "unknown"),
+                    # The supervisor's hover RMSE is intentionally not an RC
+                    # acceptance criterion: RC-NMPC is expected to move away
+                    # from the external hover reference.  Keep that RMSE as a
+                    # diagnostic field, but judge the RC case by safe
+                    # completion and the explicit RC/solver checks below.
+                    "success": supervisor_safe_complete,
+                    "supervisor_success": bool(supervisor_result.get("success", False)),
+                    "supervisor_safe_complete": supervisor_safe_complete,
+                    "reason": supervisor_reason,
                     "landed_disarmed": supervisor_result.get("landed_disarmed", False),
                     "supervisor_position_rmse_m": supervisor_result.get("tracking_position_rmse_m"),
+                    "rc_timeout_seen": supervisor_result.get("rc_timeout_seen", False),
+                    "rc_timeout_position_seen": supervisor_result.get("rc_timeout_position_seen", False),
+                    "rc_timeout_fallback_seen": supervisor_result.get("rc_timeout_fallback_seen", False),
                 }
     finally:
         _terminate(supervisor_process)
@@ -162,11 +191,16 @@ def main() -> int:
         rc_active_count = sum(int(row.get("rc_mode_active", "0")) for row in rows)
     result["rc_active_sample_count"] = rc_active_count
     result["solve_failure_count"] = int(result.get("solve_failure_count", 0))
-    result["success"] = bool(result.get("success", False) and rc_active_count > 0 and result["solve_failure_count"] == 0)
+    result["success"] = bool(
+        result.get("supervisor_safe_complete", False) and
+        rc_active_count > 0 and
+        result["solve_failure_count"] == 0
+    )
     if rc_active_count == 0:
         result["reason"] = "RC-NMPC was not activated (no rc_mode_active samples)"
     subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "integration/plot_cpp_run.py"), str(output)],
+        [sys.executable, str(PROJECT_ROOT / "integration/plot_cpp_run.py"), str(output),
+         "--source", "nmpc_flight"],
         cwd=PROJECT_ROOT, env=environment, check=False,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
@@ -176,12 +210,25 @@ def main() -> int:
         result["controller_timing_plot"] = str((output / "controller_timing.png").resolve())
     ulog = _latest_ulog(px4_log_root, started_at)
     if ulog is not None:
-        destination = output / ulog.name
-        import shutil
+        destination = log_directory / ulog.name
         shutil.copy2(ulog, destination)
         result["px4_ulog"] = str(destination.resolve())
     result["backend"] = "cpp_rc_injection"
     result["rc_aux_channel"] = args.rc_aux_channel
+    result["run_configuration"] = {
+        "backend": "ROS 2 + C++ single-process NMPC",
+        "solver_hash": SOLVER_HASH,
+        "control_period_s": 0.01,
+        "horizon_steps": 30,
+        "rc_aux_channel": args.rc_aux_channel,
+        "manual_control_topic": "/nmpc/test/manual_control_setpoint",
+        "rc_timeout_s": 0.50,
+        "drop_after_s": args.drop_after if args.drop_after >= 0.0 else None,
+        "params_snapshot": str(params_snapshot),
+        "node_executable": str(node),
+        "rc_timeout_action": "latch_nmpc_output_off_and_request_px4_auto_loiter",
+        "plot_source": "nmpc_flight.csv",
+    }
     result["cpp_node_log"] = str(node_log.resolve())
     result["rc_injector_log"] = str(injector_log.resolve())
     result["case_directory"] = str(output)
@@ -192,6 +239,16 @@ def main() -> int:
         "# C++ RC-NMPC injection\n\n"
         f"- Result: {'PASS' if result.get('success') else 'FAIL'}\n"
         f"- AUX channel: {args.rc_aux_channel}\n"
+        f"- RC timeout test: {'drop after ' + str(args.drop_after) + ' s' if args.drop_after >= 0.0 else 'normal stream'}\n"
+        f"- RC timeout fallback: {result.get('rc_timeout_fallback_seen', 'not applicable')}\n"
+        f"- RC active samples: {result.get('rc_active_sample_count', 0)}\n"
+        f"- Solve failures: {result.get('solve_failure_count', 0)}\n"
+        "- Supervisor hover RMSE: diagnostic only; not an RC acceptance criterion\n"
+        f"- Solve Median/P95/P99/Max (ms): {result.get('acados_solve_median_p95_p99_max_ms', [])}\n"
+        f"- rx→pub Median/P95/P99/Max (ms): {result.get('rx_to_pub_median_p95_p99_max_ms', [])}\n"
+        f"- Parameter snapshot: `{params_snapshot}`\n"
+        f"- Temporary logs: `{log_directory}`\n"
+        "- Plot source: `nmpc_flight.csv`\n"
         f"- JSON: `{json_path}`\n",
         encoding="utf-8",
     )

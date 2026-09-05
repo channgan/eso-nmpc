@@ -13,6 +13,7 @@ pymavlink = pytest.importorskip("pymavlink")
 
 from integration.mavlink_params import (  # noqa: E402
     DEFAULT_PARAMETERS,
+    GuardedParameter,
     ParamGuard,
     ParamGuardError,
 )
@@ -83,6 +84,22 @@ def test_guard_leaves_untouched_parameters_alone() -> None:
         # Already at the guarded value: nothing was written, nothing restored.
         assert px4.params == params
         assert guard._changed == set()
+
+
+def test_guard_accepts_real32_round_trip() -> None:
+    # MAVLink carries REAL32 values.  Values such as 0.002 cannot be
+    # represented exactly and must be compared with a small tolerance.
+    requested = 0.002
+    with FakePx4(params={"SIM_GZ_ODOM_RW_P": 0.0}) as px4:
+        guard = ParamGuard(
+            parameters=(
+                GuardedParameter("SIM_GZ_ODOM_RW_P", requested),
+            ),
+            connection_string=f"udpout:127.0.0.1:{px4.port}",
+        )
+        with guard:
+            assert px4.params["SIM_GZ_ODOM_RW_P"] == pytest.approx(requested)
+        assert px4.params["SIM_GZ_ODOM_RW_P"] == pytest.approx(0.0)
 
 
 def test_guard_fails_without_heartbeat() -> None:

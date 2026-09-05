@@ -320,7 +320,7 @@ class Px4NmpcHover(Node):
         self._rates_command_lock = threading.Lock()
         self._last_rates_command: tuple[float, np.ndarray, float] | None = None
         self._offboard_heartbeat_period = min(
-            0.05, max(0.01, float(config.controller.control_period))
+            0.05, max(0.001, float(config.controller.control_period))
         )
         self._offboard_heartbeat_stop = threading.Event()
         self._offboard_heartbeat_thread: threading.Thread | None = None
@@ -665,6 +665,7 @@ class Px4NmpcHover(Node):
         if (
             message is None
             or not message.valid
+            or message.data_source != ManualControlSetpoint.SOURCE_RC
             or monotonic() - self.last_manual_control_time > self.config.manual_control.timeout
         ):
             return False
