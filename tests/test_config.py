@@ -8,8 +8,8 @@ from nmpc.config import load_config
 
 def test_default_config_is_consistent() -> None:
     config = load_config()
-    assert config.controller.sample_time == pytest.approx(0.02)
-    assert config.controller.control_period == pytest.approx(0.02)
+    assert config.controller.sample_time == pytest.approx(0.01)
+    assert config.controller.control_period == pytest.approx(0.01)
     assert config.controller.horizon_steps == 30
     assert config.hover_thrust == pytest.approx(2.0643076923 * 9.80665)
     assert config.limits.thrust_min < config.hover_thrust < config.limits.thrust_max
@@ -22,13 +22,15 @@ def test_default_config_is_consistent() -> None:
     assert config.manual_control.max_horizontal_speed == pytest.approx(2.0)
     assert config.manual_control.timeout == pytest.approx(0.5)
     assert config.cost_scales.weight_factor == pytest.approx(0.7)
+    assert config.controller.warm_start is True
     assert config.eso.enabled is True
-    assert config.eso.bandwidth_rad_s == pytest.approx(3.0)
+    assert config.eso.bandwidth_rad_s == pytest.approx(2.5)
     assert config.eso.disturbance_clamp_m_s2 == pytest.approx(1.0)
     assert config.eso.activation_delay_s == pytest.approx(3.0)
     assert config.eso.innovation_limit_m_s == pytest.approx(0.5)
     np.testing.assert_allclose(
-        config.cost_scales.position_error_m, [0.1, 0.1, 0.1 / np.sqrt(2.0)]
+        config.cost_scales.position_error_m,
+        [0.1, 0.1, 0.0707106781],
     )
     np.testing.assert_allclose(config.cost_scales.velocity_error_m_s, 0.1)
     np.testing.assert_allclose(config.cost_scales.attitude_error_deg, 5.0)
@@ -36,11 +38,12 @@ def test_default_config_is_consistent() -> None:
     np.testing.assert_allclose(config.cost_scales.body_rate_correction_deg_s, 5.0)
     np.testing.assert_allclose(
         config.cost_scales.state_weights,
-        0.7
-        * np.r_[
-            [100.0, 100.0, 200.0],
-            [100.0] * 3,
-            [1.0 / np.deg2rad(5.0) ** 2] * 3,
+        np.r_[
+            [70.0, 70.0, 140.0],
+            0.7 * np.r_[
+                [100.0] * 3,
+                [1.0 / np.deg2rad(5.0) ** 2] * 3,
+            ],
         ],
     )
     np.testing.assert_allclose(
@@ -53,7 +56,7 @@ def test_config_arrays_are_not_aliased_by_yaml() -> None:
     first = load_config()
     second = load_config()
     first.cost_scales.position_error_m[0] = 999.0
-    assert second.cost_scales.position_error_m[0] == 0.1
+    assert second.cost_scales.position_error_m[0] == pytest.approx(0.1)
 
 
 def test_x500_thrust_limits_match_px4_throttle() -> None:

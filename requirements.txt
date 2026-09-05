@@ -3,3 +3,4 @@ PyYAML>=6.0
 casadi>=3.7.2,<3.8
 scipy>=1.13
 pytest>=7.0
+catkin_pkg>=1.0

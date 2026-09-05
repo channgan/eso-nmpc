@@ -10,14 +10,14 @@
 
 ## 当前实现
 
-1. 控制定时器使用 ROS `STEADY_TIME`，所有控制周期基于 `CLOCK_MONOTONIC`。
+1. 控制定时器使用 ROS `STEADY_TIME`，控制/心跳周期为 `0.01 s`（100 Hz），所有控制周期基于 `CLOCK_MONOTONIC`；MPC 离散和轨迹采样步长为 `0.02 s`。
 2. PX4 输出状态优先使用 `VehicleOdometry.timestamp_sample`，回退时使用
    `VehicleOdometry.timestamp`。
 3. 根据 `timestamp - timestamp_sample` 估计 PX4 内部采样年龄，并将采样时间
    映射到上位机单调时钟；无效年龄会计数并回退到接收时间。
 4. NMPC 只对新的 PX4 状态采样时间求解，重复状态不会重复求解。
 5. 轨迹 elapsed time 使用 PX4 状态采样时间差推进；负跳变或超过 100 ms 的
-   时间间隔替换为 nominal `sample_time=0.01 s`，并记录跳变次数。
+   时间间隔替换为 nominal `sample_time=0.02 s`，并记录跳变次数。
 6. 输出给 PX4 的 `OffboardControlMode`、`VehicleRatesSetpoint`、命令和参考消息，
    使用“启动时同步时间戳 + 单调时钟增量”生成时间戳。
 7. 实际控制命令发布时间单独记录为单调时钟，用于 command-to-measurement 延迟分析。
@@ -28,8 +28,10 @@
     均通过才允许进入 NMPC。
 11. 模型验证分别保存 PX4 状态时间、单调时钟测量时间和控制命令发布时间，
     不再假设状态采样和命令输出同时发生。
-12. 延迟分析对命令进行时间插值并搜索最佳 command-to-rate 延迟；当前 SITL
-    观测 roll/pitch 约为 0.17--0.20 s，模型使用 `rate_tau=0.15 s`。
+12. 延迟分析对命令进行时间插值并搜索最佳 command-to-rate 延迟；当前三扰动 C++
+    日志初步得到 roll 约 `0.131--0.216 s`（中位数约 `0.151 s`），pitch 约
+    `0.216--0.307 s`，yaw 激励不足不能可靠辨识。该结果是“命令发布到
+    VehicleOdometry 角速度反馈”的有效延迟，不能直接等同于 PX4 纯速率 PID 延迟。
 
 ## 已验证结果
 
@@ -54,10 +56,13 @@
    应先检查 uXRCE/ROS 时间同步，不能直接放宽超时校验。
 5. 真机复盘优先查看：状态采样时间、状态接收时间、命令发布时间、轨迹序号、
    timestamp 年龄、sample-to-command latency、时间跳变计数和求解耗时。
+6. 当前 SITL ULog 已记录 `vehicle_angular_velocity`，但未记录
+   `vehicle_rates_setpoint`；若要隔离 PX4 速率内环本体，必须补记该 setpoint 及其
+   PX4 时间戳，再与角速度做同域辨识。当前有效延迟辨识报告为
+   `background/analysis/rate_loop_delay_20260903_230000/rate_loop_delay.md`。
 
 ## 关联代码
 
 - `integration/px4_sitl_hover.py`：控制时钟、PX4 时间戳、轨迹新鲜度和日志。
 - `nmpc/validation.py`：采样/测量/控制三种时间及延迟对齐分析。
 - `config/nmpc.yaml`：`sample_time`、`reference_timeout` 和 `rate_tau`。
-

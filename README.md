@@ -36,6 +36,11 @@ simulation/trajectory_tracking_sim.py  平滑圆轨迹闭环跟踪与验收
 tests/benchmark_solver.py         mean/p99/p99.9/max benchmark
 ```
 
+当前阶段结论见 [`docs/阶段工作记录.md`](docs/阶段工作记录.md)；接管、故障和恢复
+条件见 [`docs/NMPC使用逻辑与条件.md`](docs/NMPC使用逻辑与条件.md)，完整逐次试验
+原文归档在 `docs/归档/`。四项 C++ 回归的改动检查、启动/关闭顺序、长图和求解时间
+口径见 [`docs/四项回归操作流程.md`](docs/四项回归操作流程.md)。
+
 ## 先运行不依赖 acados 的检查
 
 ```bash
@@ -66,6 +71,9 @@ python3 -m pip install -e /path/to/acados/interfaces/acados_template
 export ACADOS_SOURCE_DIR=/path/to/acados
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$ACADOS_SOURCE_DIR/lib"
 ```
+
+ROS 2 工作区构建也可以使用该虚拟环境；`requirements.txt` 已包含 `catkin_pkg`。使用时请先
+source ROS 2，再激活项目 `.venv`，这样 CMake 能同时找到 ROS 2 和项目 Python 依赖。
 
 然后从仓库根目录生成并编译：
 
@@ -213,14 +221,17 @@ PX4 同步时间戳、13 维实测状态、当前参考、前馈、body-rate/推
 打印确切的启动命令并以退出码 2 中止）：
 
 ```bash
-# 终端 1：Gazebo（PX4 官方 default.sdf 世界）
+# 终端 1：MicroXRCE-DDS 代理
+MicroXRCEAgent udp4 -p 8888
+
+# 终端 2：Gazebo（PX4 官方 default.sdf 世界）
+cd <px4树>
+export GZ_SIM_RESOURCE_PATH=<px4树>/Tools/simulation/gz/models:<px4树>/Tools/simulation/gz/worlds
+export GZ_SIM_SERVER_CONFIG_PATH=<px4树>/src/modules/simulation/gz_bridge/server.config
 gz sim --verbose=1 -r -s <px4树>/Tools/simulation/gz/worlds/default.sdf
 
-# 终端 2：PX4 SITL（保持该终端存活；make 会随源码变更重新编译）
+# 终端 3：PX4 SITL（保持该终端存活；make 会随源码变更重新编译）
 cd <px4树> && make px4_sitl gz_x500
-
-# 终端 3：MicroXRCE-DDS 代理
-MicroXRCEAgent udp4 -p 8888
 ```
 
 注意：若 PX4 已在运行但 MAVLink 长时间无客户端（例如跑过一次套件后隔了很久），
@@ -287,6 +298,6 @@ colcon build --packages-select eso_nmpc_node \
 - 已实现第一阶段 NMPC 数学核心、扰动参数接口、C solver 生成配置、离线模型/接口测试与 benchmark。
 - 已包含 PX4 x500 SITL 的 ROS 2 悬停/圆轨迹验收节点和线性悬停点推力归一化；该映射仅用于当前 x500 仿真。
 - `feature/eso` 分支已包含可配置的速度通道 LESO（`config/nmpc.yaml` 的 `eso` 段），
-  并将同一扰动估计同时送入逆动力学前馈和 NMPC 预测；默认带宽为 `3 rad/s`，接真机前
+并将同一扰动估计同时送入逆动力学前馈和 NMPC 预测；默认带宽为 `2.5 rad/s`，接真机前
   仍必须重新测量质量、标定推力模型并通过四项基线验证。角速度继续以 PX4 内环加一阶
   滞后建模（`rate_tau`）。
