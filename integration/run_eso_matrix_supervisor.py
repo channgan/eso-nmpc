@@ -57,7 +57,13 @@ def _pids_for_process(kind: str) -> list[int]:
             or command.rstrip() == "px4"
         ):
             pids.append(pid)
-        elif kind == "gazebo" and command.startswith("gz sim"):
+        elif kind == "gazebo" and (
+            # Depending on the installed Gazebo wrapper, ps may show
+            # ``gz sim``, ``ruby gz sim``, or an absolute-path wrapper.  The
+            # PX4 world path keeps this match scoped to this SITL instance.
+            "gz sim" in command
+            and str(PX4 / "Tools/simulation/gz") in command
+        ):
             pids.append(pid)
         elif kind == "ninja" and "ninja -C " in command and " gz_x500" in command:
             pids.append(pid)
@@ -205,11 +211,15 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-root", type=Path, default=ROOT / "background/baseline_runs/eso_comparison/matrix_supervised")
     parser.add_argument("--only-eso", choices=("on", "off", "both"), default="both")
-    parser.add_argument("--eso-bandwidth", type=float, default=3.0,
-                        help="ESO bandwidth in rad/s (default: current baseline 3.0)")
+    parser.add_argument("--eso-bandwidth", type=float, default=2.5,
+                        help="ESO bandwidth in rad/s (default: current baseline 2.5)")
     parser.add_argument("--case-timeout", type=float, default=180.0,
                         help="per-trajectory child timeout in seconds (default: 180)")
-    parser.add_argument("--rmw-implementation", default="rmw_fastrtps_cpp")
+    parser.add_argument(
+        "--rmw-implementation",
+        default="rmw_cyclonedds_cpp",
+        help="RMW implementation for all ROS 2 child processes (formal default: CycloneDDS)",
+    )
     parser.add_argument("--position-bias-rw-std-m-sqrt-s", type=float, default=0.002)
     parser.add_argument("--velocity-bias-rw-std-m-s-sqrt-s", type=float, default=0.005)
     parser.add_argument("--cases", nargs="+", choices=TRAJECTORIES, default=list(TRAJECTORIES),

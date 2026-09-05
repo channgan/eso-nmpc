@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import sys
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 from time import monotonic
@@ -24,6 +25,8 @@ from px4_msgs.msg import (
     VehicleOdometry,
     VehicleStatus,
 )
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
@@ -36,7 +39,9 @@ class CppHoverSupervisor(Node):
     def __init__(self, output_directory: Path, trajectory: str = "hover",
                  radius: float = 2.0, speed: float = 1.0,
                  point_hold_duration: float = 2.0,
-                 safety_drift_limit: float | None = None) -> None:
+                 safety_drift_limit: float | None = None,
+                 expect_rc_timeout_fallback: bool = False,
+                 reference_sample_time: float = 0.01) -> None:
         super().__init__("cpp_nmpc_hover_supervisor")
         self.output_directory = output_directory
         if trajectory not in ("hover", "point_1m", "circle", "figure8"):
@@ -46,8 +51,9 @@ class CppHoverSupervisor(Node):
         self.speed = float(speed)
         self.point_hold_duration = float(point_hold_duration)
         self.safety_drift_limit = safety_drift_limit
+        self.expect_rc_timeout_fallback = bool(expect_rc_timeout_fallback)
         self.points = 31
-        self.sample_time = 0.02
+        self.sample_time = float(reference_sample_time)
         self.ascent_duration = 4.0
         self.transition_duration = 3.0
         self.point_hold_duration = 4.0
@@ -68,8 +74,37 @@ class CppHoverSupervisor(Node):
         self.initial_yaw = 0.0
         self.finished = False
         self.failure_reason = ""
+        self.rc_timeout_seen = False
+        self.rc_timeout_position_seen = False
+        self.rc_timeout_fallback_seen = False
+        self.rc_timeout_hold_started = 0.0
+        self.odometry_timestamp_fault_seen = False
+        self.odometry_timestamp_fault_fallback_seen = False
+        self.odometry_timestamp_fault_hold_started = 0.0
+        self.odometry_timestamp_gap_count = 0
+        self.supervisor_observer_gap_count = 0
+        self.odometry_update_count = 0
+        self.odometry_receive_time_s = 0.0
+        self.last_flight_odometry_update_count = 0
+        self.last_flight_odometry_receive_time_s = 0.0
+        self.last_flight_odometry_timestamp_us = 0
+        self.control_enable_sent = False
         self.records: list[dict[str, float]] = []
+        self._last_reference_velocity = np.zeros(3, dtype=float)
         self.trajectory_sequence = 0
+        self.trajectory_publish_count = 0
+        self.trajectory_publish_gap_count = 0
+        self.trajectory_publish_max_gap_s = 0.0
+        self._last_trajectory_publish_time_s = 0.0
+        self._trajectory_stop = threading.Event()
+        self._management_lock = threading.RLock()
+        self._trajectory_state_lock = threading.Lock()
+        # The complete reference horizon is published by a dedicated daemon
+        # thread below.  Keep state/fault callbacks and the supervisor timer
+        # in their own callback groups so safety checks do not depend on the
+        # RMW publish path.
+        self._state_callback_group = MutuallyExclusiveCallbackGroup()
+        self._timer_callback_group = MutuallyExclusiveCallbackGroup()
 
         output_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -83,6 +118,12 @@ class CppHoverSupervisor(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        fault_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         trajectory_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -90,16 +131,19 @@ class CppHoverSupervisor(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
         self.create_subscription(
-            VehicleOdometry, "/fmu/out/vehicle_odometry", self._on_odometry, output_qos
+            VehicleOdometry, "/fmu/out/vehicle_odometry", self._on_odometry, output_qos,
+            callback_group=self._state_callback_group
         )
         self.create_subscription(
-            VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, output_qos
+            VehicleStatus, "/fmu/out/vehicle_status_v1", self._on_status, output_qos,
+            callback_group=self._state_callback_group
         )
         self.create_subscription(
             VehicleLandDetected,
             "/fmu/out/vehicle_land_detected",
             self._on_land_detected,
             output_qos,
+            callback_group=self._state_callback_group,
         )
         self.trajectory_publisher = self.create_publisher(
             NmpcTrajectorySetpoint, "/nmpc/in/trajectory_setpoint", trajectory_qos
@@ -107,33 +151,115 @@ class CppHoverSupervisor(Node):
         self.enable_publisher = self.create_publisher(
             Bool, "/nmpc/control_enabled", input_qos
         )
+        self.create_subscription(
+            Bool, "/nmpc/rc_timeout", self._on_rc_timeout, input_qos,
+            callback_group=self._state_callback_group
+        )
+        self.create_subscription(
+            Bool, "/nmpc/odometry_timestamp_fault",
+            self._on_odometry_timestamp_fault, fault_qos,
+            callback_group=self._state_callback_group
+        )
         self.command_publisher = self.create_publisher(
             VehicleCommand, "/fmu/in/vehicle_command", input_qos
         )
-        self.timer = self.create_timer(self.sample_time, self._tick)
+        self.timer = self.create_timer(
+            self.sample_time, self._tick, callback_group=self._timer_callback_group
+        )
+        # A complete fixed-size horizon may enter the RMW layer.  Keep it out
+        # of the state/safety executor so a DDS publication stall cannot stop
+        # the supervisor from observing PX4 or closing the case.
+        self._trajectory_thread = threading.Thread(
+            target=self._trajectory_publish_loop,
+            name="nmpc-trajectory-publisher",
+            daemon=True,
+        )
+        self._trajectory_thread.start()
 
     def _timestamp_us(self) -> int:
         return self.get_clock().now().nanoseconds // 1000
 
     def _on_odometry(self, message: VehicleOdometry) -> None:
-        self.odometry = message
+        with self._management_lock:
+            self.odometry = message
+            self.odometry_update_count += 1
+            self.odometry_receive_time_s = monotonic()
 
     def _on_status(self, message: VehicleStatus) -> None:
-        self.status = message
+        with self._management_lock:
+            self.status = message
+            if self.phase == "RC_TIMEOUT_HOLD" and message.nav_state in (
+                VehicleStatus.NAVIGATION_STATE_POSCTL,
+                VehicleStatus.NAVIGATION_STATE_AUTO_LAND,
+            ):
+                self.rc_timeout_fallback_seen = True
+                if message.nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL:
+                    self.rc_timeout_position_seen = True
 
     def _on_land_detected(self, message: VehicleLandDetected) -> None:
-        self.land_detected = message
+        with self._management_lock:
+            self.land_detected = message
+
+    def _on_rc_timeout(self, message: Bool) -> None:
+        with self._management_lock:
+            if not message.data or self.phase in ("LANDING", "DONE") or self.rc_timeout_seen:
+                return
+            self.rc_timeout_seen = True
+            self.get_logger().error(
+                "RC timeout received; disabling NMPC and requesting PX4 AUTO.LOITER"
+            )
+            self._enable(False)
+            self.last_command_time = 0.0
+            if self.phase == "FLIGHT":
+                self.rc_timeout_hold_started = monotonic()
+                self._command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0)
+                self._set_phase("RC_TIMEOUT_HOLD")
+            else:
+                self.failure_reason = self.failure_reason or "RC timeout before FLIGHT"
+                self._command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+                self._set_phase("LANDING")
+
+    def _handle_odometry_timestamp_fault(self, reason: str) -> None:
+        with self._management_lock:
+            if self.odometry_timestamp_fault_seen:
+                return
+            self.odometry_timestamp_fault_seen = True
+            self.failure_reason = reason
+            self._enable(False)
+            self.last_command_time = 0.0
+            if self.phase == "FLIGHT":
+                self.odometry_timestamp_fault_hold_started = monotonic()
+                self.get_logger().error(
+                    "%s; disabling NMPC and requesting PX4 Position/Hold" % reason
+                )
+                self._command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0)
+                self._set_phase("ODOMETRY_FAULT_HOLD")
+            elif self.phase not in ("LANDING", "DONE"):
+                self.get_logger().error(
+                    "%s before FLIGHT; disabling NMPC and aborting" % reason
+                )
+                self._command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+                self._set_phase("LANDING")
+
+    def _on_odometry_timestamp_fault(self, message: Bool) -> None:
+        with self._management_lock:
+            if not message.data:
+                return
+            self.odometry_timestamp_gap_count += 1
+            self._handle_odometry_timestamp_fault("C++ odometry timestamp gap fault")
 
     def _enable(self, enabled: bool) -> None:
         message = Bool()
         message.data = enabled
         self.enable_publisher.publish(message)
 
-    def _command(self, command: int, param1: float = 0.0, param2: float = 0.0) -> None:
+    def _command(self, command: int, param1: float = 0.0, param2: float = 0.0,
+                 param3: float = 0.0) -> None:
         message = VehicleCommand()
         message.timestamp = self._timestamp_us()
         message.param1 = float(param1)
         message.param2 = float(param2)
+        message.param3 = float(param3)
         message.command = int(command)
         message.target_system = 1
         message.target_component = 1
@@ -142,21 +268,24 @@ class CppHoverSupervisor(Node):
         message.from_external = True
         self.command_publisher.publish(message)
 
-    def _sample(self, time_s: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        assert self.initial_position is not None
+    def _sample(
+        self, time_s: float, initial_position: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        anchor = self.initial_position if initial_position is None else initial_position
+        assert anchor is not None
         if time_s <= 0.0:
-            return self.initial_position.copy(), np.zeros(3), np.zeros(3)
+            return anchor.copy(), np.zeros(3), np.zeros(3)
         if time_s < self.ascent_duration:
             fraction, velocity_fraction, acceleration_fraction = smooth_profile(
                 time_s, self.ascent_duration
             )
             delta = np.array([0.0, 0.0, -self.altitude])
             return (
-                self.initial_position + fraction * delta,
+                anchor + fraction * delta,
                 velocity_fraction * delta,
                 acceleration_fraction * delta,
             )
-        hover = self.initial_position + np.array([0.0, 0.0, -self.altitude])
+        hover = anchor + np.array([0.0, 0.0, -self.altitude])
         if self.trajectory == "hover":
             return hover, np.zeros(3), np.zeros(3)
         if self.trajectory == "point_1m":
@@ -254,8 +383,14 @@ class CppHoverSupervisor(Node):
             )
         return hover, np.zeros(3), np.zeros(3)
 
-    def _publish_horizon(self, elapsed: float) -> np.ndarray:
-        samples = [self._sample(elapsed + i * self.sample_time) for i in range(self.points)]
+    def _publish_horizon(
+        self, elapsed: float, initial_position: np.ndarray | None = None,
+        initial_yaw: float | None = None,
+    ) -> np.ndarray:
+        samples = [
+            self._sample(elapsed + i * self.sample_time, initial_position)
+            for i in range(self.points)
+        ]
         position = np.asarray([sample[0] for sample in samples], dtype=np.float32)
         velocity = np.asarray([sample[1] for sample in samples], dtype=np.float32)
         acceleration = np.asarray([sample[2] for sample in samples], dtype=np.float32)
@@ -264,17 +399,53 @@ class CppHoverSupervisor(Node):
         jerk[-1] = jerk[-2] if self.points > 1 else 0.0
         message = NmpcTrajectorySetpoint()
         message.timestamp = self._timestamp_us()
-        self.trajectory_sequence += 1
-        message.sequence = self.trajectory_sequence
+        with self._trajectory_state_lock:
+            self.trajectory_sequence += 1
+            message.sequence = self.trajectory_sequence
+            now = monotonic()
+            if self._last_trajectory_publish_time_s > 0.0:
+                gap = now - self._last_trajectory_publish_time_s
+                self.trajectory_publish_max_gap_s = max(self.trajectory_publish_max_gap_s, gap)
+                if gap > max(0.1, 2.0 * self.sample_time):
+                    self.trajectory_publish_gap_count += 1
+            self._last_trajectory_publish_time_s = now
+            self.trajectory_publish_count += 1
+        message.yaw[: self.points] = [
+            self.initial_yaw if initial_yaw is None else initial_yaw
+        ] * self.points
         message.points = self.points
         message.sample_time = self.sample_time
         message.position[: 3 * self.points] = position.reshape(-1).tolist()
         message.velocity[: 3 * self.points] = velocity.reshape(-1).tolist()
         message.acceleration[: 3 * self.points] = acceleration.reshape(-1).tolist()
         message.jerk[: 3 * self.points] = jerk.reshape(-1).tolist()
-        message.yaw[: self.points] = [self.initial_yaw] * self.points
         self.trajectory_publisher.publish(message)
+        with self._trajectory_state_lock:
+            self._last_reference_velocity = velocity[0].astype(float)
         return position[0].astype(float)
+
+    def _trajectory_publish_loop(self) -> None:
+        next_publish = monotonic()
+        while not self._trajectory_stop.is_set() and rclpy.ok():
+            now = monotonic()
+            with self._management_lock:
+                phase = self.phase
+                initial_position = (
+                    None if self.initial_position is None else self.initial_position.copy()
+                )
+                initial_yaw = self.initial_yaw
+                flight_started = self.flight_started
+            if phase in ("PRESTREAM", "ENTER_OFFBOARD", "ARMING", "FLIGHT") and initial_position is not None:
+                elapsed = now - flight_started if phase == "FLIGHT" else 0.0
+                try:
+                    self._publish_horizon(elapsed, initial_position, initial_yaw)
+                except Exception as error:  # pragma: no cover - defensive during shutdown
+                    self.get_logger().error("trajectory publisher failed: %s" % error)
+            next_publish += self.sample_time
+            now = monotonic()
+            if next_publish < now - self.sample_time:
+                next_publish = now + self.sample_time
+            self._trajectory_stop.wait(max(0.0, next_publish - now))
 
     def _set_phase(self, phase: str) -> None:
         self.phase = phase
@@ -290,6 +461,10 @@ class CppHoverSupervisor(Node):
         self._set_phase("LANDING")
 
     def _tick(self) -> None:
+        with self._management_lock:
+            self._tick_locked()
+
+    def _tick_locked(self) -> None:
         if self.finished:
             return
         now = monotonic()
@@ -313,14 +488,12 @@ class CppHoverSupervisor(Node):
 
         assert self.initial_position is not None
         if self.phase == "PRESTREAM":
-            self._publish_horizon(0.0)
             self._enable(True)
             if now - self.phase_started > 1.5:
                 self._set_phase("ENTER_OFFBOARD")
             return
 
         if self.phase == "ENTER_OFFBOARD":
-            self._publish_horizon(0.0)
             self._enable(True)
             if now - self.last_command_time > 0.5:
                 self._command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
@@ -333,7 +506,6 @@ class CppHoverSupervisor(Node):
             return
 
         if self.phase == "ARMING":
-            self._publish_horizon(0.0)
             self._enable(True)
             if now - self.last_command_time > 0.5:
                 self._command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
@@ -341,17 +513,79 @@ class CppHoverSupervisor(Node):
             if self.status is not None and self.status.arming_state == VehicleStatus.ARMING_STATE_ARMED:
                 self.initial_position = np.asarray(self.odometry.position, dtype=float)
                 self.flight_started = now
+                # The cached odometry may be a pre-arm sample.  Establish the
+                # continuity baseline from the first fresh FLIGHT sample
+                # instead of measuring the entire pre-arm interval as a gap.
+                self.last_flight_odometry_update_count = self.odometry_update_count
+                self.last_flight_odometry_receive_time_s = 0.0
+                self.last_flight_odometry_timestamp_us = 0
+                self.control_enable_sent = False
                 self._set_phase("FLIGHT")
             elif now - self.phase_started > 8.0:
                 self._abort("arming timeout")
             return
 
         if self.phase == "FLIGHT":
+            # Reference publication is a periodic source in its own right.
+            # Do not make it depend on the observer's latest odometry callback:
+            # a transient PX4/DDS observer gap must not turn a still-valid
+            # trajectory into a stale-reference timeout in the C++ node.
             elapsed = now - self.flight_started
-            reference = self._publish_horizon(elapsed)
-            self._enable(True)
+            reference = self._sample(elapsed)[0]
+            if self.odometry_update_count == self.last_flight_odometry_update_count:
+                if (self.last_flight_odometry_receive_time_s > 0.0 and
+                        now - self.last_flight_odometry_receive_time_s > 0.10):
+                    # The C++ node is the controller-side safety authority and
+                    # publishes its own receive-gap fault.  This Python
+                    # supervisor subscription is validation/metrics only; it
+                    # can temporarily stop dispatching while the C++ node
+                    # continues receiving the same PX4 stream.  Do not turn an
+                    # observer scheduling gap into a flight abort.
+                    self.supervisor_observer_gap_count += 1
+                    self.get_logger().warning(
+                        "supervisor odometry observer gap %.3fs; waiting for the "
+                        "C++ controller fault topic instead"
+                        % (now - self.last_flight_odometry_receive_time_s)
+                    )
+                    self.last_flight_odometry_receive_time_s = 0.0
+                return
+            receive_step_s = (
+                self.odometry_receive_time_s - self.last_flight_odometry_receive_time_s
+                if self.last_flight_odometry_receive_time_s > 0.0 else float("nan")
+            )
+            self.last_flight_odometry_update_count = self.odometry_update_count
+            if (self.last_flight_odometry_receive_time_s > 0.0 and
+                    (not np.isfinite(receive_step_s) or receive_step_s <= 0.0 or
+                     receive_step_s > 0.10)):
+                self.supervisor_observer_gap_count += 1
+                self.get_logger().warning(
+                    "supervisor odometry observer gap %.3fs; accepting the next "
+                    "sample and waiting for the C++ controller fault topic"
+                    % receive_step_s
+                )
+                self.last_flight_odometry_receive_time_s = 0.0
+            self.last_flight_odometry_receive_time_s = self.odometry_receive_time_s
+            timestamp_us = int(getattr(self.odometry, "timestamp", 0))
+            previous_timestamp_us = self.last_flight_odometry_timestamp_us
+            if timestamp_us <= 0:
+                self.get_logger().warning(
+                    "dropping odometry with zero PX4 timestamp; receive clock remains authoritative"
+                )
+                return
+            if previous_timestamp_us > 0 and timestamp_us <= previous_timestamp_us:
+                self.get_logger().warning(
+                    "dropping out-of-order odometry timestamp %d after %d"
+                    % (timestamp_us, previous_timestamp_us)
+                )
+                return
+            self.last_flight_odometry_timestamp_us = timestamp_us
+            if not self.control_enable_sent:
+                self._enable(True)
+                self.control_enable_sent = True
             position = np.asarray(self.odometry.position, dtype=float)
             velocity = np.asarray(self.odometry.velocity, dtype=float)
+            with self._trajectory_state_lock:
+                reference_velocity = self._last_reference_velocity.copy()
             error = position - reference
             self.records.append(
                 {
@@ -359,6 +593,9 @@ class CppHoverSupervisor(Node):
                     "position_x": position[0], "position_y": position[1], "position_z": position[2],
                     "reference_x": reference[0], "reference_y": reference[1], "reference_z": reference[2],
                     "velocity_x": velocity[0], "velocity_y": velocity[1], "velocity_z": velocity[2],
+                    "reference_velocity_x": reference_velocity[0],
+                    "reference_velocity_y": reference_velocity[1],
+                    "reference_velocity_z": reference_velocity[2],
                     "position_error_m": float(np.linalg.norm(error)),
                 }
             )
@@ -371,6 +608,52 @@ class CppHoverSupervisor(Node):
                 return
             if elapsed >= self.ascent_duration + self.hold_duration:
                 self._enable(False)
+                self._command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+                self._set_phase("LANDING")
+            return
+
+        if self.phase == "RC_TIMEOUT_HOLD":
+            self._enable(False)
+            if self.status is not None and self.status.nav_state in (
+                VehicleStatus.NAVIGATION_STATE_POSCTL,
+                VehicleStatus.NAVIGATION_STATE_AUTO_LOITER,
+            ):
+                if not self.rc_timeout_position_seen:
+                    self.rc_timeout_position_seen = True
+                    self.get_logger().info("RC timeout fallback confirmed: PX4 Position/AUTO.LOITER")
+                self.rc_timeout_fallback_seen = True
+            elif self.status is not None and self.status.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
+                self.rc_timeout_fallback_seen = True
+                self.get_logger().info("RC timeout fallback confirmed: PX4 Land failsafe")
+            elif now - self.last_command_time > 0.5:
+                self._command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0)
+                self.last_command_time = now
+            # The test must verify the fallback first, then land explicitly so
+            # the SITL case can close cleanly.  Real flight does not use this
+            # scripted landing step.
+            if now - self.rc_timeout_hold_started >= 3.0:
+                if self.expect_rc_timeout_fallback and not self.rc_timeout_fallback_seen:
+                    self._abort("RC timeout did not reach PX4 Position or Land fallback")
+                else:
+                    self._command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+                    self._set_phase("LANDING")
+            return
+
+        if self.phase == "ODOMETRY_FAULT_HOLD":
+            self._enable(False)
+            if self.status is not None and self.status.nav_state in (
+                VehicleStatus.NAVIGATION_STATE_POSCTL,
+                VehicleStatus.NAVIGATION_STATE_AUTO_LOITER,
+            ):
+                self.odometry_timestamp_fault_fallback_seen = True
+            elif self.status is not None and self.status.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
+                self.odometry_timestamp_fault_fallback_seen = True
+            elif now - self.last_command_time > 0.5:
+                self._command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0)
+                self.last_command_time = now
+            # The test confirms the fallback before asking SITL to land.  A
+            # real flight manager owns this mode change and recovery policy.
+            if now - self.odometry_timestamp_fault_hold_started >= 3.0:
                 self._command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
                 self._set_phase("LANDING")
             return
@@ -395,12 +678,17 @@ class CppHoverSupervisor(Node):
         landed = self.status is not None and self.status.arming_state == VehicleStatus.ARMING_STATE_DISARMED
         success = bool(landed and not self.failure_reason and errors.size > 100 and rmse < 0.25 and maximum < 0.6)
         self.output_directory.mkdir(parents=True, exist_ok=True)
+        self._trajectory_stop.set()
         csv_path = self.output_directory / "trajectory.csv"
         if self.records:
             with csv_path.open("w", newline="", encoding="utf-8") as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(self.records[0]))
                 writer.writeheader()
                 writer.writerows(self.records)
+        with self._trajectory_state_lock:
+            trajectory_publish_count = self.trajectory_publish_count
+            trajectory_publish_gap_count = self.trajectory_publish_gap_count
+            trajectory_publish_max_gap_s = self.trajectory_publish_max_gap_s
         summary = {
             "success": success,
             "backend": "cpp_single_process",
@@ -411,12 +699,39 @@ class CppHoverSupervisor(Node):
             "tracking_position_rmse_m": rmse,
             "tracking_position_max_m": maximum,
             "trajectory_log": str(csv_path.resolve()),
+            "rc_timeout_seen": self.rc_timeout_seen,
+            "rc_timeout_position_seen": self.rc_timeout_position_seen,
+            "rc_timeout_fallback_seen": self.rc_timeout_fallback_seen,
+            "odometry_timestamp_gap_count": self.odometry_timestamp_gap_count,
+            "supervisor_observer_gap_count": self.supervisor_observer_gap_count,
+            "trajectory_publish_count": trajectory_publish_count,
+            "trajectory_publish_gap_count": trajectory_publish_gap_count,
+            "trajectory_publish_max_gap_s": trajectory_publish_max_gap_s,
+            "odometry_timestamp_fault_seen": self.odometry_timestamp_fault_seen,
+            "odometry_timestamp_fault_fallback_seen": (
+                self.odometry_timestamp_fault_fallback_seen
+            ),
         }
+        if self.expect_rc_timeout_fallback and not self.rc_timeout_fallback_seen:
+            summary["reason"] = "RC timeout fallback did not reach PX4 Position or Land mode"
+        success = bool(
+            success and
+            (not self.expect_rc_timeout_fallback or
+             (self.rc_timeout_seen and self.rc_timeout_fallback_seen))
+        )
+        summary["success"] = success
         (self.output_directory / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         print("CPP_NMPC_SITL_RESULT=" + json.dumps(summary, sort_keys=True), flush=True)
         self.finished = True
+
+    def stop_trajectory_publisher(self) -> None:
+        """Stop and join the publisher before the ROS node is destroyed."""
+        self._trajectory_stop.set()
+        thread = getattr(self, "_trajectory_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
 
 
 def main() -> int:
@@ -430,7 +745,15 @@ def main() -> int:
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--step-dwell", type=float, default=2.0)
+    parser.add_argument(
+        "--reference-sample-time", type=float, default=0.01,
+        help="reference trajectory sampling step; C++ NMPC control period remains 0.01 s (100 Hz)",
+    )
     parser.add_argument("--safety-drift-limit", type=float, default=None)
+    parser.add_argument(
+        "--expect-rc-timeout-fallback", action="store_true",
+        help="RC 超时后必须看到 PX4 Position mode，再结束 SITL 测试",
+    )
     parser.add_argument("--position-bias-rw-std-m-sqrt-s", type=float, default=0.0)
     parser.add_argument("--velocity-bias-rw-std-m-s-sqrt-s", type=float, default=0.0)
     parser.add_argument(
@@ -441,6 +764,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.safety_drift_limit is not None and args.safety_drift_limit <= 0.0:
         parser.error("safety-drift-limit must be positive")
+    if args.reference_sample_time <= 0.0:
+        parser.error("reference-sample-time must be positive")
     parameters = DEFAULT_PARAMETERS + (
         GuardedParameter(
             "SIM_GZ_ODOM_RW_P",
@@ -458,12 +783,17 @@ def main() -> int:
         rclpy.init()
         node = CppHoverSupervisor(
             args.output_directory, args.trajectory, args.radius, args.speed,
-            args.step_dwell, args.safety_drift_limit
+            args.step_dwell, args.safety_drift_limit, args.expect_rc_timeout_fallback,
+            args.reference_sample_time,
         )
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
         try:
             while rclpy.ok() and not node.finished:
-                rclpy.spin_once(node, timeout_sec=0.1)
+                executor.spin_once(timeout_sec=0.1)
         finally:
+            node.stop_trajectory_publisher()
+            executor.shutdown()
             node.destroy_node()
             rclpy.shutdown()
     return 0 if node.finished and not node.failure_reason else 1

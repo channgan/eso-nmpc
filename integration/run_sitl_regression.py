@@ -255,18 +255,23 @@ def _write_suite_reports(directory: Path, results: dict[str, dict[str, object]])
 def _write_combined_trajectory_plot(
     directory: Path, results: dict[str, dict[str, object]]
 ) -> Path | None:
-    """Stack the per-case trajectory plots into one easy-to-scan long image."""
-    plot_paths: list[tuple[str, Path]] = []
+    """Stack trajectory and timing plots for every case into one long image."""
+    plot_paths: list[tuple[str, Path, Path | None]] = []
     for case in CASES:
         result = results.get(case.name)
         if result is None:
             continue
-        value = result.get("trajectory_plot")
-        if not value:
+        trajectory_value = result.get("trajectory_plot")
+        if not trajectory_value:
             continue
-        path = Path(str(value))
-        if path.is_file():
-            plot_paths.append((case.name, path))
+        trajectory_path = Path(str(trajectory_value))
+        if not trajectory_path.is_file():
+            continue
+        timing_value = result.get("controller_timing_plot")
+        timing_path = Path(str(timing_value)) if timing_value else None
+        if timing_path is not None and not timing_path.is_file():
+            timing_path = None
+        plot_paths.append((case.name, trajectory_path, timing_path))
     if not plot_paths:
         return None
 
@@ -279,15 +284,30 @@ def _write_combined_trajectory_plot(
         return None
 
     try:
-        images = [(name, plt.imread(path)) for name, path in plot_paths]
+        row_count = sum(2 if timing_path is not None else 1
+                        for _, _, timing_path in plot_paths)
         figure, axes = plt.subplots(
-            len(images), 1, figsize=(12.0, 7.5 * len(images)), squeeze=False
+            row_count, 1, figsize=(12.0, 10.5 * len(plot_paths)), squeeze=False,
+            gridspec_kw={"height_ratios": [ratio for _, _, timing_path in plot_paths
+                                            for ratio in ((7.5, 3.0)
+                                                          if timing_path is not None else (7.5,))]},
         )
-        for axis, (name, image) in zip(axes[:, 0], images):
-            axis.imshow(image)
-            axis.set_title(name, loc="left", fontsize=14, fontweight="bold")
-            axis.axis("off")
-        figure.subplots_adjust(left=0.0, right=1.0, top=0.995, bottom=0.005, hspace=0.02)
+        axis_index = 0
+        for name, trajectory_path, timing_path in plot_paths:
+            trajectory_axis = axes[axis_index, 0]
+            trajectory_axis.imshow(plt.imread(trajectory_path))
+            trajectory_axis.set_title(f"{name} · tracking", loc="left",
+                                      fontsize=14, fontweight="bold")
+            trajectory_axis.axis("off")
+            axis_index += 1
+            if timing_path is not None:
+                timing_axis = axes[axis_index, 0]
+                timing_axis.imshow(plt.imread(timing_path))
+                timing_axis.set_title(f"{name} · solve timing", loc="left",
+                                      fontsize=12, fontweight="bold")
+                timing_axis.axis("off")
+                axis_index += 1
+        figure.subplots_adjust(left=0.0, right=1.0, top=0.995, bottom=0.005, hspace=0.08)
         output = directory / "trajectory_suite_long.png"
         figure.savefig(output, dpi=150, bbox_inches="tight", pad_inches=0.05)
         plt.close(figure)
